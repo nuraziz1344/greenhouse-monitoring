@@ -1,0 +1,18 @@
+generator client {
+    provider = "prisma-client"
+    output   = "./generated"
+}
+
+datasource db {
+    provider = "postgresql"
+}
+
+model Telemetry {
+    id           BigInt   @id @default(autoincrement())
+    temperature  Float    @map("temperature")
+    humidity     Float    @map("humidity")
+    soilMoisture Float    @map("soil_moisture")
+    createdAt    DateTime @default(now()) @map("created_at")
+
+    @@map("telemetry")
+}

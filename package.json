@@ -1,0 +1,39 @@
+{
+  "name": "greenhouse-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "simulate:once": "tsx scripts/simulate-esp32.ts --count=50 --interval=2",
+    "simulate:continuous": "tsx scripts/simulate-esp32.ts --continuous --interval=5"
+  },
+  "dependencies": {
+    "@dotenvx/dotenvx": "^1.71.3",
+    "@prisma/adapter-pg": "^7.8.0",
+    "nuxt": "^4.4.8",
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "@nuxtjs/tailwindcss": "^6.14.0",
+    "@prisma/client": "^7.8.0",
+    "@scalar/nuxt": "^0.6.46",
+    "@types/pg": "^8.20.0",
+    "@vite-pwa/nuxt": "^1.1.1",
+    "@vueuse/core": "^14.3.0",
+    "chart.js": "^4.5.1",
+    "prisma": "^7.8.0",
+    "reka-ui": "^2.9.10",
+    "tsx": "^4.19.3",
+    "typescript": "^6.0.3",
+    "vue-chartjs": "^5.3.3"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

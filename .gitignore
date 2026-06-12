@@ -1,0 +1,54 @@
+# Nuxt dev/build outputs
+.output/
+.data/
+.nuxt/
+dist/
+
+# Node dependencies
+node_modules/
+.pnpm/
+
+# Package manager
+pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# Logs
+logs/
+*.log
+
+# Misc
+.DS_Store
+.fleet/
+.idea/
+.vscode/settings.json
+.vscode/extensions.json.bak
+*.swp
+*.swo
+*~
+
+# IDE
+.history/
+.classpath
+.c9/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.env.prod
+
+# Prisma
+prisma/migrations/
+prisma/generated
+
+# Testing
+coverage/
+.nyc_output/
+
+# Build artifacts
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Vercel
+.vercel/

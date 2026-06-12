@@ -1,0 +1,97 @@
+// https://nuxt.com/docs/api/configuration/nuxt-config
+export default defineNuxtConfig({
+  compatibilityDate: '2026-06-12',
+  future: { compatibilityVersion: 4 },
+
+  modules: [
+    '@nuxtjs/tailwindcss',
+    '@vite-pwa/nuxt',
+    '@scalar/nuxt',
+  ],
+
+  css: ['~/assets/css/main.css'],
+
+  tailwindcss: {
+    cssPath: '~/assets/css/main.css',
+    config: {
+      theme: {
+        extend: {
+          colors: {
+            primary: {
+              50: '#ecfdf5',
+              100: '#d1fae5',
+              200: '#a7f3d0',
+              300: '#6ee7b7',
+              400: '#34d399',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857',
+              800: '#065f46',
+              900: '#064e3b',
+            },
+          },
+        },
+      },
+    },
+  },
+
+  // PWA Configuration
+  pwa: {
+    registerType: 'autoUpdate',
+    manifest: {
+      name: 'Greenhouse Monitor',
+      short_name: 'GH Monitor',
+      description: 'IoT Greenhouse Environmental Monitoring Dashboard',
+      theme_color: '#10b981',
+      background_color: '#ffffff',
+      display: 'standalone',
+      orientation: 'portrait-primary',
+      icons: [
+        {
+          src: '/icons/icon-192x192.png',
+          sizes: '192x192',
+          type: 'image/png',
+        },
+        {
+          src: '/icons/icon-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+        },
+      ],
+    },
+    workbox: {
+      navigateFallback: '/',
+      globPatterns: ['**/*.{js,css,html,png,svg,ico}'],
+      maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // 4 MiB (default is 2 MiB)
+    },
+    client: {
+      installPrompt: true,
+    },
+  },
+
+  // Scalar API Documentation
+  scalar: {
+    spec: {
+      url: '/api/openapi.json',
+    },
+    darkMode: true,
+    showSidebar: false,
+    hideModels: true,
+    hideDownloadButton: true,
+  },
+
+  // Nitro server configuration for Vercel deployment
+  nitro: {
+    preset: 'vercel',
+  },
+
+  app: {
+    head: {
+      title: 'Greenhouse Monitor',
+      meta: [
+        { name: 'description', content: 'IoT Greenhouse Environmental Monitoring System' },
+        { name: 'theme-color', content: '#10b981' },
+      ],
+    },
+  },
+})
