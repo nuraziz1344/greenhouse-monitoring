@@ -3,11 +3,7 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-06-12',
   future: { compatibilityVersion: 4 },
 
-  modules: [
-    '@nuxtjs/tailwindcss',
-    '@vite-pwa/nuxt',
-    '@scalar/nuxt',
-  ],
+  modules: ['@nuxtjs/tailwindcss', '@vite-pwa/nuxt'],
 
   css: ['~/assets/css/main.css'],
 
@@ -69,20 +65,12 @@ export default defineNuxtConfig({
     },
   },
 
-  // Scalar API Documentation
-  scalar: {
-    spec: {
-      url: '/api/openapi.json',
-    },
-    darkMode: true,
-    showSidebar: false,
-    hideModels: true,
-    hideDownloadButton: true,
-  },
-
   // Nitro server configuration for Vercel deployment
   nitro: {
     preset: 'vercel',
+    experimental: {
+        openAPI: true
+    }
   },
 
   app: {
@@ -92,6 +80,15 @@ export default defineNuxtConfig({
         { name: 'description', content: 'IoT Greenhouse Environmental Monitoring System' },
         { name: 'theme-color', content: '#10b981' },
       ],
+    },
+  },
+
+  // Runtime configuration
+  runtimeConfig: {
+    public: {
+      telemetryPollInterval: 30_000, // milliseconds (default: 30 seconds)
+      statusBadgeInterval: 1_000, // milliseconds (default: 1 second)
+      esp32DisconnectTimeout: 120_000, // milliseconds (default: 2 minutes)
     },
   },
 })

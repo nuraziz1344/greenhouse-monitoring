@@ -1,7 +1,18 @@
 <script setup lang="ts">
-import { useOnline } from '@vueuse/core'
+const config = useRuntimeConfig()
+const esp32Status = useState('esp32Status', () => ({ connected: false, timeSince: 'No data' }))
 
-const online = useOnline()
+// Force re-renders to keep time display current (configurable interval, default: 1 second)
+const trigger = ref(0)
+let timeInterval: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  timeInterval = setInterval(() => {
+    trigger.value++
+  }, config.public.statusBadgeInterval)
+})
+onUnmounted(() => {
+  if (timeInterval) clearInterval(timeInterval)
+})
 </script>
 
 <template>
@@ -22,17 +33,14 @@ const online = useOnline()
           </div>
         </div>
 
-        <!-- Connection Status -->
+        <!-- ESP32 Connection Status -->
         <div class="flex items-center gap-2 text-sm">
           <span
-            class="w-2 h-2 rounded-full"
-            :class="online ? 'bg-green-500' : 'bg-red-500'"
+            class="w-2 h-2 rounded-full animate-pulse"
+            :class="esp32Status.connected ? 'bg-green-500' : 'bg-red-500'"
           />
           <span class="text-gray-600 hidden sm:inline">
-            {{ online ? 'Online' : 'Offline' }}
-          </span>
-          <span v-if="!online" class="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
-            Cached Data
+            ESP32: {{ esp32Status.connected ? 'Connected' : 'Disconnected' }}
           </span>
         </div>
       </div>
