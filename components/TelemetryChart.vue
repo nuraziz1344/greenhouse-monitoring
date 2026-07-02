@@ -15,9 +15,8 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, T
 
 interface TelemetryRecord {
   id: string
-  temperature: number
-  humidity: number
   soilMoisture: number
+  recordedAt: string | null
   createdAt: string
 }
 
@@ -26,69 +25,38 @@ const props = defineProps<{
 }>()
 
 const labels = computed(() => {
-  const data = props.records.slice().reverse()
-  return data.map((r) => {
-    const d = new Date(r.createdAt)
+  return props.records.slice().reverse().map((r) => {
+    const d = new Date(r.recordedAt ?? r.createdAt)
     return d.toLocaleTimeString('en-ID', { hour: '2-digit', minute: '2-digit' })
   })
 })
 
-const temperatureData = computed(() => {
-  const data = props.records.slice().reverse()
-  return {
-    labels: labels.value,
-    datasets: [
-      {
-        label: 'Temperature (°C)',
-        data: data.map((r) => r.temperature),
-        borderColor: '#ef4444',
-        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-      },
-    ],
-  }
-})
-
-const humidityData = computed(() => {
-  const data = props.records.slice().reverse()
-  return {
-    labels: labels.value,
-    datasets: [
-      {
-        label: 'Humidity (%)',
-        data: data.map((r) => r.humidity),
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-      },
-    ],
-  }
-})
-
-const moistureData = computed(() => {
-  const data = props.records.slice().reverse()
-  return {
-    labels: labels.value,
-    datasets: [
-      {
-        label: 'Soil Moisture (%)',
-        data: data.map((r) => r.soilMoisture),
-        borderColor: '#10b981',
-        backgroundColor: 'rgba(16, 185, 129, 0.1)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-      },
-    ],
-  }
-})
+const chartData = computed(() => ({
+  labels: labels.value,
+  datasets: [
+    {
+      label: 'Soil Moisture (%)',
+      data: props.records.slice().reverse().map((r) => r.soilMoisture),
+      borderColor: '#10b981',
+      backgroundColor: 'rgba(16, 185, 129, 0.1)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+    },
+    {
+      // Alert threshold reference line
+      label: 'Alert Threshold (40%)',
+      data: props.records.map(() => 40),
+      borderColor: 'rgba(239, 68, 68, 0.5)',
+      borderDash: [5, 5],
+      borderWidth: 1,
+      pointRadius: 0,
+      fill: false,
+      tension: 0,
+    },
+  ],
+}))
 
 const chartOptions = computed(() => ({
   responsive: true,
@@ -99,11 +67,15 @@ const chartOptions = computed(() => ({
   },
   plugins: {
     legend: {
-      display: false,
+      display: true,
+      labels: {
+        font: { size: 11 },
+        boxWidth: 12,
+      },
     },
     tooltip: {
       callbacks: {
-        label: (ctx: any) => `${ctx.parsed.y.toFixed(1)}`,
+        label: (ctx: any) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%`,
       },
     },
   },
@@ -114,40 +86,25 @@ const chartOptions = computed(() => ({
     },
     y: {
       beginAtZero: true,
+      max: 100,
       grid: { color: 'rgba(0,0,0,0.06)' },
-      ticks: { font: { size: 11 } },
+      ticks: {
+        font: { size: 11 },
+        callback: (value: any) => `${value}%`,
+      },
     },
   },
 }))
 </script>
 
 <template>
-  <div v-if="records.length > 0" class="grid grid-cols-1 gap-4">
-    <!-- Temperature Chart -->
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 class="text-sm font-semibold text-red-700 mb-3">Temperature Trend</h3>
-      <div class="h-48">
-        <Line :data="temperatureData" :options="chartOptions" />
-      </div>
-    </div>
-
-    <!-- Humidity Chart -->
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 class="text-sm font-semibold text-blue-700 mb-3">Humidity Trend</h3>
-      <div class="h-48">
-        <Line :data="humidityData" :options="chartOptions" />
-      </div>
-    </div>
-
-    <!-- Soil Moisture Chart -->
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 class="text-sm font-semibold text-green-700 mb-3">Soil Moisture Trend</h3>
-      <div class="h-48">
-        <Line :data="moistureData" :options="chartOptions" />
-      </div>
+  <div v-if="records.length > 0" class="bg-white rounded-xl border border-gray-200 p-5">
+    <h3 class="text-sm font-semibold text-green-700 mb-3">Soil Moisture Trend</h3>
+    <div class="h-64">
+      <Line :data="chartData" :options="chartOptions" />
     </div>
   </div>
-  <div v-else class="bg-white rounded-xl border border-gray-200 p-5 h-48 flex items-center justify-center text-gray-400 text-sm">
-    No data available yet. Waiting for sensor readings...
+  <div v-else class="bg-white rounded-xl border border-gray-200 p-5 h-64 flex items-center justify-center text-gray-400 text-sm">
+    No data available yet. Connect via BLE or wait for cloud data.
   </div>
 </template>

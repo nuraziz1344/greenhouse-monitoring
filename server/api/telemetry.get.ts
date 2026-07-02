@@ -1,7 +1,7 @@
 /**
  * GET /api/telemetry
  *
- * Retrieves historical telemetry data, ordered by most recent first.
+ * Retrieves historical soil moisture data, ordered by most recent first.
  *
  * Query params:
  *   limit (number, optional) — number of records to return (default: 50, max: 1000)
@@ -17,9 +17,10 @@ export default defineEventHandler(async (event) => {
     take: limit,
   })
 
-  // Convert BigInt ids to strings for JSON serialization
-  return records.map(record => ({
-    ...record,
+  return records.map((record) => ({
     id: record.id.toString(),
+    soilMoisture: record.soilMoisture,
+    recordedAt: record.recordedAt?.toISOString() ?? null,
+    createdAt: record.createdAt.toISOString(),
   }))
 })

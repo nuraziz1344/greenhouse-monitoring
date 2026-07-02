@@ -1,18 +1,5 @@
 <script setup lang="ts">
-const config = useRuntimeConfig()
-const esp32Status = useState('esp32Status', () => ({ connected: false, timeSince: 'No data' }))
-
-// Force re-renders to keep time display current (configurable interval, default: 1 second)
-const trigger = ref(0)
-let timeInterval: ReturnType<typeof setInterval> | null = null
-onMounted(() => {
-  timeInterval = setInterval(() => {
-    trigger.value++
-  }, config.public.statusBadgeInterval)
-})
-onUnmounted(() => {
-  if (timeInterval) clearInterval(timeInterval)
-})
+const esp32Status = useState('esp32Status', () => ({ bleConnected: false }))
 </script>
 
 <template>
@@ -33,14 +20,14 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- ESP32 Connection Status -->
+        <!-- BLE Connection Status -->
         <div class="flex items-center gap-2 text-sm">
           <span
-            class="w-2 h-2 rounded-full animate-pulse"
-            :class="esp32Status.connected ? 'bg-green-500' : 'bg-red-500'"
+            class="w-2 h-2 rounded-full"
+            :class="esp32Status.bleConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-300'"
           />
           <span class="text-gray-600 hidden sm:inline">
-            ESP32: {{ esp32Status.connected ? 'Connected' : 'Disconnected' }}
+            BLE: {{ esp32Status.bleConnected ? 'Connected' : 'Disconnected' }}
           </span>
         </div>
       </div>

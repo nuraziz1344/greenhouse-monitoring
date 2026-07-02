@@ -1,52 +1,35 @@
 /**
  * Greenhouse Monitoring API - OpenAPI Specification
- *
- * This file defines the REST API contract for the IoT Greenhouse Monitoring System.
- * It is served as JSON via /api/openapi.json for Scalar documentation.
- */
-
-/**
- * Returns the OpenAPI specification as a JSON object.
- * Used by Nuxt server route to serve the spec to Scalar.
  */
 export const openApiSpec = {
   openapi: '3.1.0',
   info: {
     title: 'Greenhouse Monitoring API',
-    version: '1.0.0',
+    version: '2.0.0',
     description: `
 RESTful API for the IoT Greenhouse Monitoring System.
 
 ## Overview
-This API enables IoT devices (ESP32) to submit environmental telemetry data
-and provides historical data retrieval for the web dashboard.
+A mobile PWA connects to an ESP32 via Bluetooth Low Energy (BLE), reads real-time
+soil moisture, and syncs stored history from the device's LittleFS to this API.
 
 ## Hardware
 - **Microcontroller**: ESP32 Dev Kit
-- **Sensors**: DHT22 (temperature & humidity), Capacitive Soil Moisture Sensor
-- **ADC**: ADS1115 16-bit external ADC (I2C)
-- **Display**: OLED 128x64 (I2C)
+- **Sensor**: Capacitive Soil Moisture Sensor via ADS1115 (16-bit ADC, I2C)
+- **Connectivity**: BLE GATT → mobile PWA → cloud
 
 ## Alerting
-When soil moisture drops below 40%, the server automatically dispatches
-a notification via the configured messaging channel (Telegram/WhatsApp).
+When soil moisture drops below 40%, the server dispatches a notification via the
+configured webhook (Telegram/WhatsApp).
     `.trim(),
-    contact: {
-      name: 'Greenhouse Team',
-    },
   },
-  servers: [
-    {
-      url: '/',
-      description: 'Production server',
-    },
-  ],
+  servers: [{ url: '/', description: 'Production server' }],
   paths: {
     '/api/telemetry': {
       post: {
         tags: ['Telemetry'],
-        summary: 'Submit telemetry data',
-        description: 'Ingest environmental sensor readings from the greenhouse IoT device.',
+        summary: 'Submit a telemetry reading',
+        description: 'Ingest a soil moisture reading relayed from the ESP32 via the mobile PWA.',
         operationId: 'submitTelemetry',
         requestBody: {
           required: true,
@@ -54,31 +37,21 @@ a notification via the configured messaging channel (Telegram/WhatsApp).
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['temperature', 'humidity', 'soilMoisture'],
+                required: ['soilMoisture'],
                 properties: {
-                  temperature: {
-                    type: 'number',
-                    format: 'float',
-                    description: 'Air temperature in Celsius',
-                    example: 28.5,
-                    minimum: -40,
-                    maximum: 80,
-                  },
-                  humidity: {
-                    type: 'number',
-                    format: 'float',
-                    description: 'Air humidity in percentage (%)',
-                    example: 65.2,
-                    minimum: 0,
-                    maximum: 100,
-                  },
                   soilMoisture: {
                     type: 'number',
                     format: 'float',
-                    description: 'Soil moisture in percentage (%)',
+                    description: 'Soil moisture percentage',
                     example: 55.0,
                     minimum: 0,
                     maximum: 100,
+                  },
+                  recordedAt: {
+                    type: 'string',
+                    format: 'date-time',
+                    description: 'ISO 8601 timestamp from ESP32 (omit for real-time readings)',
+                    example: '2026-06-25T10:00:00Z',
                   },
                 },
               },
@@ -87,67 +60,34 @@ a notification via the configured messaging channel (Telegram/WhatsApp).
         },
         responses: {
           '201': {
-            description: 'Telemetry data successfully recorded',
+            description: 'Telemetry recorded',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
-                    id: { type: 'integer', description: 'Record ID' },
+                    id: { type: 'string', description: 'Record ID' },
                     message: { type: 'string', example: 'Telemetry recorded' },
                   },
                 },
               },
             },
           },
-          '400': {
-            description: 'Invalid payload - missing or invalid fields',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    error: { type: 'string' },
-                    details: { type: 'array', items: { type: 'string' } },
-                  },
-                },
-              },
-            },
-          },
-          '500': {
-            description: 'Server error',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    error: { type: 'string' },
-                  },
-                },
-              },
-            },
-          },
-        },
-        'x-alerting': {
-          description: 'If soilMoisture < 40%, the server dispatches a notification via messaging API.',
+          '400': { description: 'Invalid payload' },
+          '500': { description: 'Server error' },
         },
       },
       get: {
         tags: ['Telemetry'],
         summary: 'Retrieve telemetry history',
-        description: 'Fetch historical sensor readings. Ordered by most recent first.',
+        description: 'Fetch historical soil moisture readings, ordered most recent first.',
         operationId: 'getTelemetry',
         parameters: [
           {
             name: 'limit',
             in: 'query',
             description: 'Number of records to return (max 1000)',
-            schema: {
-              type: 'integer',
-              default: 50,
-              minimum: 1,
-              maximum: 1000,
-            },
+            schema: { type: 'integer', default: 50, minimum: 1, maximum: 1000 },
           },
         ],
         responses: {
@@ -160,10 +100,9 @@ a notification via the configured messaging channel (Telegram/WhatsApp).
                   items: {
                     type: 'object',
                     properties: {
-                      id: { type: 'integer' },
-                      temperature: { type: 'number', format: 'float' },
-                      humidity: { type: 'number', format: 'float' },
+                      id: { type: 'string' },
                       soilMoisture: { type: 'number', format: 'float' },
+                      recordedAt: { type: 'string', format: 'date-time', nullable: true },
                       createdAt: { type: 'string', format: 'date-time' },
                     },
                   },
@@ -171,17 +110,70 @@ a notification via the configured messaging channel (Telegram/WhatsApp).
               },
             },
           },
-          '500': {
-            description: 'Server error',
+          '500': { description: 'Server error' },
+        },
+      },
+    },
+    '/api/telemetry/batch': {
+      post: {
+        tags: ['Telemetry'],
+        summary: 'Bulk-insert synced history from ESP32',
+        description: 'Upload up to 500 soil moisture readings synced from ESP32 LittleFS via BLE.',
+        operationId: 'submitTelemetryBatch',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['readings'],
+                properties: {
+                  readings: {
+                    type: 'array',
+                    maxItems: 500,
+                    items: {
+                      type: 'object',
+                      required: ['soilMoisture'],
+                      properties: {
+                        soilMoisture: {
+                          type: 'number',
+                          format: 'float',
+                          minimum: 0,
+                          maximum: 100,
+                        },
+                        recordedAt: {
+                          type: 'string',
+                          format: 'date-time',
+                          description: 'Original ESP32 measurement timestamp',
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
+        },
+        responses: {
+          '201': {
+            description: 'Batch recorded',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    count: { type: 'integer', description: 'Number of records inserted' },
+                    message: { type: 'string', example: 'Batch recorded' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid payload' },
+          '500': { description: 'Server error' },
         },
       },
     },
   },
-  tags: [
-    {
-      name: 'Telemetry',
-      description: 'Environmental sensor data operations',
-    },
-  ],
+  tags: [{ name: 'Telemetry', description: 'Soil moisture sensor data operations' }],
 } as const

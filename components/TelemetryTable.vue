@@ -1,9 +1,8 @@
 <script setup lang="ts">
 interface TelemetryRecord {
   id: string
-  temperature: number
-  humidity: number
   soilMoisture: number
+  recordedAt: string | null
   createdAt: string
 }
 
@@ -29,20 +28,15 @@ function formatDate(iso: string) {
         <thead>
           <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
             <th class="px-5 py-3">Time</th>
-            <th class="px-5 py-3">Temperature</th>
-            <th class="px-5 py-3">Humidity</th>
             <th class="px-5 py-3">Soil Moisture</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
           <tr v-for="record in records" :key="record.id" class="hover:bg-gray-50 transition-colors">
-            <td class="px-5 py-3 text-gray-500 whitespace-nowrap">{{ formatDate(record.createdAt) }}</td>
-            <td class="px-5 py-3">
-              <span class="font-medium" :class="record.temperature > 35 ? 'text-red-600' : 'text-gray-700'">
-                {{ record.temperature.toFixed(1) }} °C
-              </span>
+            <td class="px-5 py-3 text-gray-500 whitespace-nowrap">
+              {{ formatDate(record.recordedAt ?? record.createdAt) }}
+              <span v-if="record.recordedAt" class="ml-1.5 text-xs text-primary-600 font-medium">(synced)</span>
             </td>
-            <td class="px-5 py-3 text-gray-700">{{ record.humidity.toFixed(1) }} %</td>
             <td class="px-5 py-3">
               <span class="font-medium" :class="record.soilMoisture < 40 ? 'text-red-600' : 'text-gray-700'">
                 {{ record.soilMoisture.toFixed(1) }} %
@@ -50,7 +44,7 @@ function formatDate(iso: string) {
             </td>
           </tr>
           <tr v-if="records.length === 0">
-            <td colspan="4" class="px-5 py-8 text-center text-gray-400">
+            <td colspan="2" class="px-5 py-8 text-center text-gray-400">
               No telemetry data recorded yet
             </td>
           </tr>

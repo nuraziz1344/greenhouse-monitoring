@@ -67,7 +67,7 @@ export default defineNuxtConfig({
 
   // Nitro server configuration for Vercel deployment
   nitro: {
-    // preset: 'vercel',
+    preset: 'vercel',
     experimental: {
         openAPI: true
     }
@@ -86,9 +86,14 @@ export default defineNuxtConfig({
   // Runtime configuration
   runtimeConfig: {
     public: {
-      telemetryPollInterval: 30_000, // milliseconds (default: 30 seconds)
-      statusBadgeInterval: 1_000, // milliseconds (default: 1 second)
-      esp32DisconnectTimeout: 120_000, // milliseconds (default: 2 minutes)
+      telemetryPollInterval: 30_000,
+      statusBadgeInterval: 1_000,
+      ble: {
+        deviceName: 'GH-Sensor',
+        serviceUuid: '4fafc201-1fb5-459e-8fcc-c5c9c331914b',
+        realtimeCharUuid: 'beb5483e-36e1-4688-b7f5-ea07361b26a8',
+        historyCharUuid: '1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e',
+      },
     },
   },
 })
