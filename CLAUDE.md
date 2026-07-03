@@ -27,10 +27,16 @@ ESP32 (BLE peripheral)
 - **BLE Connected**: Live readings update the metric card directly; "Sync History" uploads ESP32 LittleFS data
 - **Cloud Mode** (BLE disconnected): Dashboard polls `GET /api/telemetry` every 30s, shows cloud history
 
+### Time Range Selection
+The dashboard includes a segmented time-range selector (1H / 6H / 24H / 7D / All, **default 24H**).
+Clicking a range refetches the API with the new window; the chart and table automatically update.
+Filtering is based on **effective time** (`recordedAt ?? createdAt`), so batch-synced old readings
+are correctly excluded from narrow windows.
+
 ### Key Responsibilities
 - **Data Ingestion:** Receive and validate telemetry from PWA (`POST /api/telemetry`, `POST /api/telemetry/batch`)
 - **Alerting:** Dispatch notifications when soil moisture drops below 40%
-- **Visualization:** Live metric card + 24h trend chart + paginated history table
+- **Visualization:** Live metric card + time-range-filtered trend chart (1H / 6H / 24H / 7D / All) + paginated history table
 - **Offline Support:** Service Worker caching; "Sync History" ensures cloud has device data
 
 ---
@@ -115,25 +121,62 @@ The PWA uses the **Web Bluetooth API** (Android Chrome / Chromium only).
 ## 📊 API Endpoints
 
 ### `POST /api/telemetry`
-Single soil moisture reading.
+Single soil moisture reading. The `recordedAt` field defaults to the current server time if not supplied.
 
+**Request (recordedAt optional):**
+```json
+{ "soilMoisture": 55.0 }
+```
+or with explicit timestamp:
 ```json
 { "soilMoisture": 55.0, "recordedAt": "2026-06-25T10:00:00Z" }
 ```
-→ `201 { "id": "12345", "message": "Telemetry recorded" }`
+
+**Response:**
+```json
+{ "id": "12345", "message": "Telemetry recorded" }
+```
 
 Alert fires if `soilMoisture < 40%`.
 
 ### `POST /api/telemetry/batch`
-Bulk sync from ESP32 LittleFS. Max 500 readings.
+Bulk sync from ESP32 LittleFS. Max 500 readings. Like single POST, items without `recordedAt` default
+to server time.
 
+**Request (recordedAt optional per item):**
 ```json
-{ "readings": [{ "soilMoisture": 62.4, "recordedAt": "2026-06-25T08:00:00Z" }] }
+{
+  "readings": [
+    { "soilMoisture": 62.4, "recordedAt": "2026-06-25T08:00:00Z" },
+    { "soilMoisture": 58.1 }
+  ]
+}
 ```
-→ `201 { "count": 24, "message": "Batch recorded" }`
 
-### `GET /api/telemetry?limit=50`
-→ `200 [{ "id": "string", "soilMoisture": 62.4, "recordedAt": "...|null", "createdAt": "..." }]`
+**Response:**
+```json
+{ "count": 2, "message": "Batch recorded" }
+```
+
+### `GET /api/telemetry?range=24h&limit=1000`
+Retrieve historical readings within a time window.
+
+**Query params:**
+- `range` (optional): one of `1h`, `6h`, `24h` (default), `7d`, `all`
+- `limit` (optional): max records to return (default: 1000, max: 1000)
+
+**Response:**
+```json
+[
+  { "id": "string", "soilMoisture": 62.4, "recordedAt": "2026-06-25T10:00:00Z", "createdAt": "2026-06-25T10:00:05Z" }
+]
+```
+
+**Filtering logic:**
+Records are filtered and ordered by **effective time** = `recordedAt ?? createdAt`.
+This matches the chart/table display and ensures batch-synced old readings are correctly
+excluded from narrow time windows (e.g., a record measured 3 days ago is excluded from `range=1h`
+even if it was uploaded recently).
 
 ---
 
@@ -143,15 +186,17 @@ Bulk sync from ESP32 LittleFS. Max 500 readings.
 model Telemetry {
   id           BigInt    @id @default(autoincrement())
   soilMoisture Float     @map("soil_moisture")
-  recordedAt   DateTime? @map("recorded_at")   // ESP32 measurement time (null for live reads)
+  recordedAt   DateTime  @map("recorded_at")   // measurement time (defaults to server time if not supplied)
   createdAt    DateTime  @default(now()) @map("created_at")  // server receipt time
   @@map("telemetry")
 }
 ```
 
-- `recordedAt`: set when syncing ESP32 history (original sensor timestamp). Null for live readings.
-- `createdAt`: always set by server.
-- In the UI, rows with non-null `recordedAt` are marked **(synced)**.
+- `recordedAt`: measurement time. Set from client payload if supplied (e.g., from ESP32 timestamp),
+  otherwise defaults to server time at POST. Never null.
+- `createdAt`: server receipt time (always set by database default).
+- For batch-synced ESP32 history: `recordedAt` holds the original ESP32 measurement time;
+  `createdAt` holds the upload time.
 
 ---
 
@@ -207,12 +252,26 @@ avoid blocking the API response. Triggered by single POST and batch POST.
 | `pnpm db:push` | Sync Prisma schema to database |
 | `pnpm db:generate` | Regenerate Prisma types |
 | `pnpm db:studio` | Open Prisma Studio GUI |
-| `pnpm simulate:once` | Send 50 individual test readings |
+| `pnpm simulate:once` | Send 10 individual test readings |
 | `pnpm simulate:continuous` | Continuous test data stream |
 | `npx tsx scripts/simulate-esp32.ts --batch` | Send 24h batch history (tests batch endpoint) |
 | `docker-compose up -d` | Start local PostgreSQL |
 
 ---
 
-**Last Updated:** 2026-06-25  
+## ⚙️ Configuration
+
+### Time Range Selector (nuxt.config.ts)
+```ts
+runtimeConfig: {
+  public: {
+    telemetryDefaultRange: '24h', // 1h | 6h | 24h | 7d | all
+  }
+}
+```
+Change `telemetryDefaultRange` to set the default time window on dashboard load.
+
+---
+
+**Last Updated:** 2026-07-03  
 **Status:** Active Development

@@ -88,6 +88,7 @@ export default defineNuxtConfig({
     public: {
       telemetryPollInterval: 30_000,
       statusBadgeInterval: 1_000,
+      telemetryDefaultRange: '24h', // one of: 1h | 6h | 24h | 7d | all
       ble: {
         deviceName: 'GH-Sensor',
         serviceUuid: '4fafc201-1fb5-459e-8fcc-c5c9c331914b',

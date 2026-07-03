@@ -25,7 +25,7 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const data: { soilMoisture: number; recordedAt?: Date }[] = []
+  const data: { soilMoisture: number; recordedAt: Date }[] = []
 
   for (let i = 0; i < body.readings.length; i++) {
     const item = body.readings[i]
@@ -38,7 +38,11 @@ export default defineEventHandler(async (event) => {
       })
     }
 
-    const entry: { soilMoisture: number; recordedAt?: Date } = { soilMoisture }
+    // Default to current server time so recordedAt is never stored as null.
+    const entry: { soilMoisture: number; recordedAt: Date } = {
+      soilMoisture,
+      recordedAt: new Date(),
+    }
 
     if (item?.recordedAt) {
       const parsed = new Date(item.recordedAt)

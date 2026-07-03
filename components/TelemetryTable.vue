@@ -35,7 +35,6 @@ function formatDate(iso: string) {
           <tr v-for="record in records" :key="record.id" class="hover:bg-gray-50 transition-colors">
             <td class="px-5 py-3 text-gray-500 whitespace-nowrap">
               {{ formatDate(record.recordedAt ?? record.createdAt) }}
-              <span v-if="record.recordedAt" class="ml-1.5 text-xs text-primary-600 font-medium">(synced)</span>
             </td>
             <td class="px-5 py-3">
               <span class="font-medium" :class="record.soilMoisture < 40 ? 'text-red-600' : 'text-gray-700'">

@@ -28,8 +28,9 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  // Parse optional client-supplied timestamp (ESP32 measurement time)
-  let recordedAt: Date | undefined
+  // Parse optional client-supplied timestamp (ESP32 measurement time).
+  // Default to the current server time so recordedAt is never stored as null.
+  let recordedAt = new Date()
   if (body?.recordedAt) {
     const parsed = new Date(body.recordedAt)
     if (!isNaN(parsed.getTime())) {
@@ -40,7 +41,7 @@ export default defineEventHandler(async (event) => {
   const telemetry = await prisma.telemetry.create({
     data: {
       soilMoisture,
-      ...(recordedAt ? { recordedAt } : {}),
+      recordedAt,
     },
   })
 

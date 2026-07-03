@@ -7,7 +7,20 @@ interface TelemetryRecord {
 }
 
 const config = useRuntimeConfig()
-const { data, refresh, pending, error } = useFetch<TelemetryRecord[]>('/api/telemetry?limit=50')
+
+// Time range selection (default from runtime config)
+const RANGE_OPTIONS = [
+  { v: '1h', l: '1H' },
+  { v: '6h', l: '6H' },
+  { v: '24h', l: '24H' },
+  { v: '7d', l: '7D' },
+  { v: 'all', l: 'All' },
+]
+const range = ref(config.public.telemetryDefaultRange)
+
+const { data, refresh, pending, error } = useFetch<TelemetryRecord[]>(
+  () => `/api/telemetry?range=${range.value}`,
+)
 
 // Auto-poll cloud data (regardless of BLE state)
 let interval: ReturnType<typeof setInterval> | null = null
@@ -83,12 +96,28 @@ watch(data, () => { currentPage.value = 1 })
 <template>
   <div class="space-y-6">
     <!-- Page Header -->
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h2 class="text-xl font-bold text-gray-900">Dashboard</h2>
-      <button class="text-sm px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50
-         text-gray-600 transition-colors disabled:opacity-50" :disabled="pending" @click="refresh()">
-        {{ pending ? 'Refreshing...' : 'Refresh' }}
-      </button>
+      <div class="flex items-center gap-3">
+        <!-- Time range selector -->
+        <div class="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
+          <button
+            v-for="opt in RANGE_OPTIONS"
+            :key="opt.v"
+            class="text-sm px-3 py-1 rounded-md font-medium transition-colors"
+            :class="range === opt.v
+              ? 'bg-primary-600 text-white shadow-sm'
+              : 'text-gray-600 hover:bg-gray-100'"
+            @click="range = opt.v"
+          >
+            {{ opt.l }}
+          </button>
+        </div>
+        <button class="text-sm px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50
+           text-gray-600 transition-colors disabled:opacity-50" :disabled="pending" @click="refresh()">
+          {{ pending ? 'Refreshing...' : 'Refresh' }}
+        </button>
+      </div>
     </div>
 
     <!-- BLE Connection Panel (client-only: Web Bluetooth is browser-only) -->
