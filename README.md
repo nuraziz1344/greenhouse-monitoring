@@ -15,6 +15,7 @@ and sync stored sensor history to the cloud.
 - **Batch History Sync**: Upload stored ESP32 sensor readings from LittleFS to cloud in one operation
 - **Cloud Fallback**: When BLE disconnected, view historical data from cloud (updated every 30s)
 - **Time Range Filtering**: View data from the last 1H / 6H / 24H / 7 days, or all historical data
+- **Water Pump Relay Control**: Manually toggle 3 pump relays or run them on recurring daily schedules, with a bypassable single-active interlock to limit electrical load
 - **Visual Alerts**: Dashboard highlights soil moisture levels (critical < 30%, warning 30–40%, normal ≥ 40%)
 - **Mobile-Optimized**: Responsive design works on phones and tablets
 - **PWA Installation**: Install on home screen like a native app
@@ -97,6 +98,21 @@ When BLE is disconnected:
 ### Manual Refresh
 
 Click the **"Refresh"** button in the header to immediately fetch the latest data.
+
+### Controlling the Water Pumps
+
+The **Water Pump Relays** panel lists 3 relay channels (Zone A/B/C by default):
+
+- **Manual:** flip a switch to turn a relay on/off. State is saved to the cloud immediately; when
+  the ESP32 is BLE-connected, the command is also sent to the device to actuate the pump.
+- **Single-active interlock:** turning on a second relay while another is running pops a warning
+  ("Running two pumps increases the electrical load. Turn on anyway?"). Confirm to override.
+- **Schedules:** in the **Watering Schedules** panel, add a recurring window (relay, start time,
+  duration, days of week). Schedules are stored in the cloud, pushed to the ESP32 over BLE for
+  autonomous execution, and also enacted by the app while the dashboard is open + connected.
+
+> Relay state and schedules persist in the database, so the UI is fully usable in cloud/mock mode
+> without hardware — the physical pump only moves when the ESP32 is connected over BLE.
 
 ---
 
@@ -206,6 +222,33 @@ curl http://localhost:3000/api/telemetry?range=all
 ]
 ```
 
+### Relay & Schedule Endpoints
+
+```bash
+# List relays (seeds 3 channels on first call)
+curl http://localhost:3000/api/relay
+
+# Turn relay 1 on / off
+curl -X POST http://localhost:3000/api/relay \
+  -H 'Content-Type: application/json' -d '{"channel":1,"isOn":true}'
+
+# Create a schedule (relay 2, 06:30 for 15 min, Mon/Wed/Fri)
+curl -X POST http://localhost:3000/api/schedule \
+  -H 'Content-Type: application/json' \
+  -d '{"relayChannel":2,"startTime":"06:30","durationMinutes":15,"daysOfWeek":[1,3,5]}'
+
+# List / toggle / delete schedules
+curl http://localhost:3000/api/schedule
+curl -X PATCH  http://localhost:3000/api/schedule/1 -d '{"enabled":false}'
+curl -X DELETE http://localhost:3000/api/schedule/1
+
+# Relay actuation history
+curl http://localhost:3000/api/actuation
+```
+
+`daysOfWeek` uses `0=Sun … 6=Sat`. `POST /api/relay` accepts an optional `source`
+(`manual` | `schedule` | `device`, default `manual`) recorded in the actuation log.
+
 For full API documentation, see [CLAUDE.md](./CLAUDE.md).
 
 ---
@@ -218,14 +261,20 @@ For full API documentation, see [CLAUDE.md](./CLAUDE.md).
 ├── pages/                    # Nuxt pages
 │   └── index.vue             # Main dashboard
 ├── components/               # Vue components
-│   ├── BLEConnection.vue     # BLE state machine
+│   ├── BLEConnection.vue     # BLE state machine (+ sendCommand)
 │   ├── MetricCard.vue        # Soil moisture metric
 │   ├── TelemetryChart.vue    # Trend chart
-│   └── TelemetryTable.vue    # History table
+│   ├── TelemetryTable.vue    # History table
+│   ├── RelayControl.vue      # Relay switches + interlock dialog
+│   └── ScheduleEditor.vue    # Watering schedule CRUD
 ├── server/api/               # API endpoints
 │   ├── telemetry.post.ts     # Single reading
 │   ├── telemetry.get.ts      # Historical data
-│   └── telemetry/batch.post.ts  # Bulk upload
+│   ├── telemetry/batch.post.ts  # Bulk upload
+│   ├── relay.get.ts / relay.post.ts       # Relay list / control
+│   ├── schedule.get.ts / schedule.post.ts # Schedule list / create
+│   ├── schedule/[id].patch.ts / [id].delete.ts
+│   └── actuation.get.ts      # Relay actuation history
 ├── prisma/
 │   └── schema.prisma         # Database schema
 ├── nuxt.config.ts            # Nuxt configuration
@@ -316,14 +365,24 @@ To connect a real ESP32:
 1. **Configure GATT Service** in ESP32 firmware with these UUIDs:
    - Service UUID: `4fafc201-1fb5-459e-8fcc-c5c9c331914b`
    - Realtime Characteristic (NOTIFY): `beb5483e-36e1-4688-b7f5-ea07361b26a8`
-   - History Characteristic (WRITE + NOTIFY): `1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e`
+   - History Characteristic (READ): `1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e`
+   - Command Characteristic (WRITE): `a8261b36-3f5e-4a2c-9b1d-2e6f7c8a9b01` *(placeholder — finalize with firmware)*
 
-2. **Payload Format** (JSON via BLE notifications):
+2. **Sensor payload** (JSON via BLE notifications):
    ```json
    {"soilMoisture": 62.3, "recordedAt": "2026-06-25T10:00:00Z"}
    ```
 
-3. **Device Name**: Advertise as `GH-Sensor` (configurable via `NUXT_PUBLIC_BLE_DEVICE_NAME`)
+3. **Command payloads** (JSON written by the app to the command characteristic):
+   ```json
+   {"type": "relay", "channel": 1, "on": true}
+   {"type": "schedule", "schedules": [
+     {"channel": 2, "startTime": "06:30", "durationMinutes": 15, "daysOfWeek": [1,3,5], "enabled": true}
+   ]}
+   ```
+   Firmware should switch the relay(s) and store the schedule set to run watering autonomously.
+
+4. **Device Name**: Advertise as `GH-Sensor` (configurable via `NUXT_PUBLIC_BLE_DEVICE_NAME`)
 
 See [API_BLE.md](../API_BLE.md) for detailed protocol specification.
 
@@ -370,6 +429,7 @@ See [API_BLE.md](../API_BLE.md) for detailed protocol specification.
 
 - **[CLAUDE.md](./CLAUDE.md)** — Detailed architecture, patterns, and conventions
 - **[API_BLE.md](../API_BLE.md)** — BLE GATT protocol specification
+- **[API_RELAY_CONTROL.md](../API_RELAY_CONTROL.md)** — Water-pump relay + schedule integration contract (for the IoT/firmware team)
 - **[API_WIFI.md](../API_WIFI.md)** — WiFi direct integration (alternative architecture)
 - **[API_COMPARISON.md](../API_COMPARISON.md)** — WiFi vs BLE trade-offs
 
@@ -407,5 +467,5 @@ For questions or issues:
 
 ---
 
-**Last Updated:** 2026-07-03  
+**Last Updated:** 2026-07-06  
 **Status:** Active Development

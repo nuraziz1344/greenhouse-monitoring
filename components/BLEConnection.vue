@@ -152,6 +152,29 @@ async function disconnect() {
   emit('connection-change', false)
 }
 
+// ── Outbound commands (relay control / schedule push) ───────────────────────
+
+/**
+ * Write a JSON command to the ESP32 command characteristic. Resolves silently
+ * in mock mode; throws if not connected so callers can surface the failure.
+ * Payloads: { type: 'relay', channel, on } | { type: 'schedule', schedules: [...] }
+ */
+async function sendCommand(payload: object): Promise<void> {
+  if (isMockMode.value) {
+    console.log('[BLE mock] sendCommand', payload)
+    return
+  }
+  if (!gattServer || bleState.value !== 'connected') {
+    throw new Error('BLE not connected')
+  }
+
+  const service = await gattServer.getPrimaryService(config.public.ble.serviceUuid)
+  const cmdChar = await service.getCharacteristic(config.public.ble.commandCharUuid)
+  await cmdChar.writeValueWithResponse(new TextEncoder().encode(JSON.stringify(payload)))
+}
+
+defineExpose({ sendCommand })
+
 async function syncHistory() {
   if (isMockMode.value) return mockSyncHistory()
   if (!gattServer || bleState.value !== 'connected') return

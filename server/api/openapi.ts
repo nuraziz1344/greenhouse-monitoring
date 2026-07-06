@@ -174,6 +174,164 @@ configured webhook (Telegram/WhatsApp).
         },
       },
     },
+    '/api/relay': {
+      get: {
+        tags: ['Relay'],
+        summary: 'List water-pump relays',
+        description:
+          'Returns the relay channels and their current on/off state. Seeds the configured channels on first call.',
+        operationId: 'getRelays',
+        responses: {
+          '200': {
+            description: 'Array of relays',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string' },
+                      channel: { type: 'integer' },
+                      name: { type: 'string' },
+                      isOn: { type: 'boolean' },
+                      updatedAt: { type: 'string', format: 'date-time' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      post: {
+        tags: ['Relay'],
+        summary: 'Set a relay state',
+        description:
+          'Persists a relay on/off state and appends an actuation log entry. The single-active interlock is a UI concern; this endpoint records whatever it is told.',
+        operationId: 'setRelay',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['channel', 'isOn'],
+                properties: {
+                  channel: { type: 'integer', example: 1 },
+                  isOn: { type: 'boolean', example: true },
+                  source: {
+                    type: 'string',
+                    enum: ['manual', 'schedule', 'device'],
+                    default: 'manual',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Updated relay list' },
+          '400': { description: 'Invalid payload' },
+          '500': { description: 'Server error' },
+        },
+      },
+    },
+    '/api/schedule': {
+      get: {
+        tags: ['Relay'],
+        summary: 'List watering schedules',
+        operationId: 'getSchedules',
+        parameters: [
+          {
+            name: 'channel',
+            in: 'query',
+            description: 'Filter to a single relay channel',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: { '200': { description: 'Array of schedules' } },
+      },
+      post: {
+        tags: ['Relay'],
+        summary: 'Create a watering schedule',
+        operationId: 'createSchedule',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['relayChannel', 'startTime', 'durationMinutes'],
+                properties: {
+                  relayChannel: { type: 'integer', example: 1 },
+                  startTime: { type: 'string', example: '06:30', description: '"HH:MM" 24h local' },
+                  durationMinutes: { type: 'integer', example: 15, minimum: 1, maximum: 1440 },
+                  daysOfWeek: {
+                    type: 'array',
+                    items: { type: 'integer', minimum: 0, maximum: 6 },
+                    description: '0=Sun..6=Sat, defaults to every day',
+                  },
+                  enabled: { type: 'boolean', default: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: 'Schedule created' },
+          '400': { description: 'Invalid payload' },
+        },
+      },
+    },
+    '/api/schedule/{id}': {
+      patch: {
+        tags: ['Relay'],
+        summary: 'Update a schedule',
+        description: 'Update any subset of schedule fields (commonly toggles `enabled`).',
+        operationId: 'updateSchedule',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': { description: 'Updated schedule' },
+          '400': { description: 'Invalid payload' },
+          '404': { description: 'Schedule not found' },
+        },
+      },
+      delete: {
+        tags: ['Relay'],
+        summary: 'Delete a schedule',
+        operationId: 'deleteSchedule',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': { description: 'Schedule deleted' },
+          '404': { description: 'Schedule not found' },
+        },
+      },
+    },
+    '/api/actuation': {
+      get: {
+        tags: ['Relay'],
+        summary: 'Relay actuation history',
+        description: 'Returns on/off events newest first.',
+        operationId: 'getActuationLog',
+        parameters: [
+          { name: 'channel', in: 'query', schema: { type: 'integer' } },
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', default: 100, minimum: 1, maximum: 500 },
+          },
+        ],
+        responses: { '200': { description: 'Array of actuation log entries' } },
+      },
+    },
   },
-  tags: [{ name: 'Telemetry', description: 'Soil moisture sensor data operations' }],
+  tags: [
+    { name: 'Telemetry', description: 'Soil moisture sensor data operations' },
+    { name: 'Relay', description: 'Water-pump relay control and scheduling' },
+  ],
 } as const

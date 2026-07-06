@@ -94,7 +94,15 @@ export default defineNuxtConfig({
         serviceUuid: '4fafc201-1fb5-459e-8fcc-c5c9c331914b',
         realtimeCharUuid: 'beb5483e-36e1-4688-b7f5-ea07361b26a8',
         historyCharUuid: '1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e',
+        commandCharUuid: 'a8261b36-3f5e-4a2c-9b1d-2e6f7c8a9b01', // WRITE: relay/schedule commands
       },
+      // Water-pump relay channels — seeds Relay rows and labels the UI.
+      relayChannels: [
+        { channel: 1, name: 'Zone A' },
+        { channel: 2, name: 'Zone B' },
+        { channel: 3, name: 'Zone C' },
+      ],
+      relayScheduleCheckInterval: 60_000, // in-app scheduler tick (ms)
     },
   },
 })

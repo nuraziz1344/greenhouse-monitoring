@@ -15,3 +15,41 @@ model Telemetry {
 
     @@map("telemetry")
 }
+
+// A physical water-pump relay channel. Seeded (1 row per configured channel)
+// on first read via /api/relay. `isOn` holds the last-known desired state.
+model Relay {
+    id        BigInt   @id @default(autoincrement())
+    channel   Int      @unique // physical relay index (1..3)
+    name      String // e.g. "Zone A"
+    isOn      Boolean  @default(false) @map("is_on")
+    updatedAt DateTime @updatedAt @map("updated_at")
+    createdAt DateTime @default(now()) @map("created_at")
+
+    @@map("relay")
+}
+
+// A recurring daily watering window for a relay. Source of truth for schedules;
+// pushed to the ESP32 over BLE and also enacted in-app while the dashboard is open.
+model Schedule {
+    id              BigInt   @id @default(autoincrement())
+    relayChannel    Int      @map("relay_channel") // references Relay.channel
+    startTime       String   @map("start_time") // "HH:MM" 24h, local time
+    durationMinutes Int      @map("duration_minutes") // how long to run
+    daysOfWeek      Int[]    @default([0, 1, 2, 3, 4, 5, 6]) @map("days_of_week") // 0=Sun..6=Sat
+    enabled         Boolean  @default(true)
+    createdAt       DateTime @default(now()) @map("created_at")
+
+    @@map("schedule")
+}
+
+// Append-only history of relay on/off actuations.
+model ActuationLog {
+    id           BigInt   @id @default(autoincrement())
+    relayChannel Int      @map("relay_channel")
+    action       String // "on" | "off"
+    source       String // "manual" | "schedule" | "device"
+    recordedAt   DateTime @default(now()) @map("recorded_at")
+
+    @@map("actuation_log")
+}

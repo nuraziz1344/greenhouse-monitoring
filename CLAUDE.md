@@ -37,7 +37,25 @@ are correctly excluded from narrow windows.
 - **Data Ingestion:** Receive and validate telemetry from PWA (`POST /api/telemetry`, `POST /api/telemetry/batch`)
 - **Alerting:** Dispatch notifications when soil moisture drops below 40%
 - **Visualization:** Live metric card + time-range-filtered trend chart (1H / 6H / 24H / 7D / All) + paginated history table
+- **Relay Control:** Manual + scheduled control of 3 water-pump relays with a single-active interlock (see below)
 - **Offline Support:** Service Worker caching; "Sync History" ensures cloud has device data
+
+### Water Pump Relay Control
+Controls **3 water-pump relay channels** (default names Zone A/B/C), each toggleable manually or
+on a recurring daily schedule. Because the ESP32 is BLE-only (no cloud→device link), all control
+flows **app → ESP32 over BLE** via a new WRITE command characteristic; the app also persists all
+state to the DB (works in cloud/mock mode — the pump only physically actuates when BLE-connected).
+- **Single-active interlock:** only one relay should run at once (electrical load). Turning on a
+  second relay shows a **bypassable warning** dialog — enforced in the UI only, not the server.
+- **Scheduling runs "both" ways:** schedules live in the DB (source of truth). On connect / change
+  the app **pushes them to the ESP32 over BLE** (`{ type:'schedule', ... }`) so firmware can run
+  them autonomously, **and** an in-app scheduler (`relayScheduleCheckInterval`) enacts due windows
+  while the dashboard is open + connected. The in-app scheduler only "owns" (auto-offs) relays it
+  turned on — it never turns off a relay the user switched on manually.
+- **BLE command payloads** (written to `ble.commandCharUuid`):
+  `{ type:'relay', channel, on }` and
+  `{ type:'schedule', schedules:[{ channel, startTime, durationMinutes, daysOfWeek, enabled }] }`.
+  In mock mode (`?mockBle=1`) `sendCommand` just logs — the DB path still exercises the full flow.
 
 ---
 
@@ -48,23 +66,34 @@ are correctly excluded from narrow windows.
 ├── pages/
 │   └── index.vue                        # Main dashboard
 ├── components/
-│   ├── BLEConnection.vue                # BLE state machine (connect, sync, mock mode)
+│   ├── BLEConnection.vue                # BLE state machine (connect, sync, sendCommand, mock)
 │   ├── MetricCard.vue                   # Soil moisture display card
 │   ├── TelemetryChart.vue               # Soil moisture trend (Chart.js)
-│   └── TelemetryTable.vue               # History log table (recordedAt vs createdAt)
+│   ├── TelemetryTable.vue               # History log table (recordedAt vs createdAt)
+│   ├── RelayControl.vue                 # 3 relay switches + interlock warning dialog
+│   └── ScheduleEditor.vue               # Watering schedule CRUD UI
 ├── server/
 │   ├── api/
 │   │   ├── telemetry.post.ts            # POST /api/telemetry (single reading)
-│   │   ├── telemetry.get.ts             # GET /api/telemetry?limit=N
+│   │   ├── telemetry.get.ts             # GET /api/telemetry?range=&limit=
 │   │   ├── telemetry/
 │   │   │   └── batch.post.ts            # POST /api/telemetry/batch (bulk sync)
+│   │   ├── relay.get.ts                 # GET /api/relay (seeds + lists relays)
+│   │   ├── relay.post.ts               # POST /api/relay (set state + log)
+│   │   ├── schedule.get.ts             # GET /api/schedule
+│   │   ├── schedule.post.ts            # POST /api/schedule
+│   │   ├── schedule/
+│   │   │   ├── [id].patch.ts           # PATCH /api/schedule/:id
+│   │   │   └── [id].delete.ts          # DELETE /api/schedule/:id
+│   │   ├── actuation.get.ts            # GET /api/actuation (relay history)
 │   │   ├── openapi.ts                   # OpenAPI spec (v2.0)
 │   │   └── openapi.json.get.ts
 │   └── utils/
 │       ├── prisma.ts                    # Prisma Client singleton
-│       └── alerts.ts                    # sendAlert() helper (auto-imported by Nitro)
+│       ├── alerts.ts                    # sendAlert() helper (auto-imported by Nitro)
+│       └── schedule.ts                  # schedule validation + serialization helpers
 ├── prisma/
-│   └── schema.prisma                    # Telemetry(id, soilMoisture, recordedAt?, createdAt)
+│   └── schema.prisma                    # Telemetry, Relay, Schedule, ActuationLog
 ├── layouts/
 │   └── default.vue                      # Header with BLE status dot, footer
 ├── scripts/
@@ -112,7 +141,11 @@ The PWA uses the **Web Bluetooth API** (Android Chrome / Chromium only).
 | Service UUID | `4fafc201-1fb5-459e-8fcc-c5c9c331914b` |
 | Realtime Characteristic | `beb5483e-36e1-4688-b7f5-ea07361b26a8` (NOTIFY, JSON `{"soilMoisture":62.4}`) |
 | History Characteristic | `1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e` (READ, JSON array `[{soilMoisture, recordedAt}]`) |
+| Command Characteristic | `a8261b36-3f5e-4a2c-9b1d-2e6f7c8a9b01` (WRITE, JSON relay/schedule commands — see Relay Control) |
 | Device Name Filter | `GH-Sensor` (configurable via `NUXT_PUBLIC_BLE_DEVICE_NAME`) |
+
+`BLEConnection.vue` exposes `sendCommand(payload)` (via `defineExpose`) which writes JSON to the
+command characteristic (`writeValueWithResponse`); `pages/index.vue` calls it through a template ref.
 
 **Mock mode:** `?mockBle=1` query param skips BLE and uses synthetic data — works in any browser.
 
@@ -178,6 +211,17 @@ This matches the chart/table display and ensures batch-synced old readings are c
 excluded from narrow time windows (e.g., a record measured 3 days ago is excluded from `range=1h`
 even if it was uploaded recently).
 
+### Relay & Schedule endpoints
+- `GET /api/relay` — list relays; idempotently seeds one row per configured channel.
+- `POST /api/relay` — `{ channel, isOn, source? }`; updates state + writes an `ActuationLog` row.
+  Returns the full relay list. Permissive by design (interlock is UI-side).
+- `GET /api/schedule?channel=` / `POST /api/schedule` — list / create schedules
+  (`{ relayChannel, startTime:"HH:MM", durationMinutes, daysOfWeek?, enabled? }`).
+- `PATCH /api/schedule/:id` — partial update (e.g. toggle `enabled`); `DELETE /api/schedule/:id`.
+- `GET /api/actuation?channel=&limit=` — relay on/off history, newest first.
+
+Shared validation/serialization lives in `server/utils/schedule.ts` (auto-imported by Nitro).
+
 ---
 
 ## 🗄️ Database Schema
@@ -190,6 +234,36 @@ model Telemetry {
   createdAt    DateTime  @default(now()) @map("created_at")  // server receipt time
   @@map("telemetry")
 }
+
+model Relay {              // one row per physical relay channel (seeded from config)
+  id        BigInt   @id @default(autoincrement())
+  channel   Int      @unique                    // 1..3
+  name      String                              // e.g. "Zone A"
+  isOn      Boolean  @default(false) @map("is_on")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@map("relay")
+}
+
+model Schedule {           // recurring daily watering window per relay
+  id              BigInt   @id @default(autoincrement())
+  relayChannel    Int      @map("relay_channel")  // references Relay.channel
+  startTime       String   @map("start_time")     // "HH:MM"
+  durationMinutes Int      @map("duration_minutes")
+  daysOfWeek      Int[]    @default([0,1,2,3,4,5,6]) @map("days_of_week")  // 0=Sun..6=Sat
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  @@map("schedule")
+}
+
+model ActuationLog {       // append-only relay on/off history
+  id           BigInt   @id @default(autoincrement())
+  relayChannel Int      @map("relay_channel")
+  action       String                            // "on" | "off"
+  source       String                            // "manual" | "schedule" | "device"
+  recordedAt   DateTime @default(now()) @map("recorded_at")
+  @@map("actuation_log")
+}
 ```
 
 - `recordedAt`: measurement time. Set from client payload if supplied (e.g., from ESP32 timestamp),
@@ -197,6 +271,9 @@ model Telemetry {
 - `createdAt`: server receipt time (always set by database default).
 - For batch-synced ESP32 history: `recordedAt` holds the original ESP32 measurement time;
   `createdAt` holds the upload time.
+- **Relay/Schedule/ActuationLog** use `relayChannel Int` (not FK relations) to stay consistent
+  with the relation-free schema. `Relay` rows are seeded idempotently by `GET /api/relay` from
+  `runtimeConfig.public.relayChannels`. `Schedule.daysOfWeek` is a Postgres `Int[]` scalar list.
 
 ---
 
@@ -261,17 +338,25 @@ avoid blocking the API response. Triggered by single POST and batch POST.
 
 ## ⚙️ Configuration
 
-### Time Range Selector (nuxt.config.ts)
+### Runtime config (nuxt.config.ts → runtimeConfig.public)
 ```ts
-runtimeConfig: {
-  public: {
-    telemetryDefaultRange: '24h', // 1h | 6h | 24h | 7d | all
-  }
-}
+telemetryDefaultRange: '24h',       // 1h | 6h | 24h | 7d | all — default time window
+ble: {
+  // ...serviceUuid / realtimeCharUuid / historyCharUuid
+  commandCharUuid: 'a8261b36-...',  // WRITE characteristic for relay/schedule commands
+},
+relayChannels: [                    // seeds Relay rows + labels the UI
+  { channel: 1, name: 'Zone A' },
+  { channel: 2, name: 'Zone B' },
+  { channel: 3, name: 'Zone C' },
+],
+relayScheduleCheckInterval: 60_000, // in-app scheduler tick (ms)
 ```
-Change `telemetryDefaultRange` to set the default time window on dashboard load.
+- `telemetryDefaultRange` — default time window on dashboard load.
+- `relayChannels` — number/names of relays; drives both DB seeding and the control UI.
+- `commandCharUuid` — placeholder UUID; finalize with the firmware author.
 
 ---
 
-**Last Updated:** 2026-07-03  
+**Last Updated:** 2026-07-06  
 **Status:** Active Development
