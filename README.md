@@ -429,7 +429,6 @@ See [API_BLE.md](../API_BLE.md) for detailed protocol specification.
 
 - **[CLAUDE.md](./CLAUDE.md)** — Detailed architecture, patterns, and conventions
 - **[API_BLE.md](../API_BLE.md)** — BLE GATT protocol specification
-- **[API_RELAY_CONTROL.md](../API_RELAY_CONTROL.md)** — Water-pump relay + schedule integration contract (for the IoT/firmware team)
 - **[API_WIFI.md](../API_WIFI.md)** — WiFi direct integration (alternative architecture)
 - **[API_COMPARISON.md](../API_COMPARISON.md)** — WiFi vs BLE trade-offs
 
