@@ -79,12 +79,27 @@ function moistureStatus(val: number) {
   return 'normal'
 }
 
-// Share BLE state with layout header
-const esp32Status = useState('esp32Status', () => ({ bleConnected: false }))
+// Share device connection state with layout header. lastSeenAt is the
+// effective time of the newest cloud reading — the header treats a fresh
+// value as "connected via WiFi" when BLE is down.
+const esp32Status = useState<{ bleConnected: boolean; lastSeenAt: string | null }>(
+  'esp32Status',
+  () => ({ bleConnected: false, lastSeenAt: null }),
+)
+
+watch(latest, (record) => {
+  if (!record) return
+  const effective = record.recordedAt ?? record.createdAt
+  // Only move forward — switching to a narrow time range must not regress it
+  const prev = esp32Status.value.lastSeenAt
+  if (!prev || new Date(effective) > new Date(prev)) {
+    esp32Status.value = { ...esp32Status.value, lastSeenAt: effective }
+  }
+}, { immediate: true })
 
 function onConnectionChange(connected: boolean) {
   bleConnected.value = connected
-  esp32Status.value = { bleConnected: connected }
+  esp32Status.value = { ...esp32Status.value, bleConnected: connected }
   if (!connected) {
     realtimeReading.value = null
   } else {

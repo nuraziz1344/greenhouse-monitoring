@@ -88,6 +88,9 @@ export default defineNuxtConfig({
     public: {
       telemetryPollInterval: 30_000,
       statusBadgeInterval: 1_000,
+      // ESP32 counts as online via WiFi if the newest reading is fresher than
+      // this (firmware measures/POSTs every 15 min — allow one missed cycle).
+      deviceOnlineThreshold: 35 * 60_000,
       telemetryDefaultRange: '24h', // one of: 1h | 6h | 24h | 7d | all
       ble: {
         deviceName: 'GH-Sensor',

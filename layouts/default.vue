@@ -1,5 +1,38 @@
 <script setup lang="ts">
-const esp32Status = useState('esp32Status', () => ({ bleConnected: false }))
+const config = useRuntimeConfig()
+const esp32Status = useState<{ bleConnected: boolean; lastSeenAt: string | null }>(
+  'esp32Status',
+  () => ({ bleConnected: false, lastSeenAt: null }),
+)
+
+// Ticking "now" so the badge flips to Disconnected when readings go stale
+const now = ref(Date.now())
+let tick: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  tick = setInterval(() => { now.value = Date.now() }, config.public.statusBadgeInterval)
+})
+onUnmounted(() => {
+  if (tick) clearInterval(tick)
+})
+
+// Universal ESP32 connection state:
+//  'ble'     — connected directly over BLE (esp → ble → PWA)
+//  'online'  — recent reading arrived via the cloud API (esp → wifi → API)
+//  'offline' — neither
+const connection = computed<'ble' | 'online' | 'offline'>(() => {
+  if (esp32Status.value.bleConnected) return 'ble'
+  const last = esp32Status.value.lastSeenAt
+  if (last && now.value - new Date(last).getTime() <= config.public.deviceOnlineThreshold) {
+    return 'online'
+  }
+  return 'offline'
+})
+
+const connectionLabel = computed(() => ({
+  ble: 'BLE Connected',
+  online: 'Connected',
+  offline: 'Disconnected',
+}[connection.value]))
 </script>
 
 <template>
@@ -20,14 +53,18 @@ const esp32Status = useState('esp32Status', () => ({ bleConnected: false }))
           </div>
         </div>
 
-        <!-- BLE Connection Status -->
+        <!-- ESP32 Connection Status (BLE or WiFi/cloud) -->
         <div class="flex items-center gap-2 text-sm">
           <span
             class="w-2 h-2 rounded-full"
-            :class="esp32Status.bleConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-300'"
+            :class="{
+              'bg-blue-500 animate-pulse': connection === 'ble',
+              'bg-green-500 animate-pulse': connection === 'online',
+              'bg-gray-300': connection === 'offline',
+            }"
           />
           <span class="text-gray-600 hidden sm:inline">
-            BLE: {{ esp32Status.bleConnected ? 'Connected' : 'Disconnected' }}
+            {{ connectionLabel }}
           </span>
         </div>
       </div>
