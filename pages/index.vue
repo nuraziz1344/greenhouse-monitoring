@@ -169,11 +169,6 @@ async function onSchedulesChanged() {
 // enacts due windows when the app is open so schedules still fire without firmware.
 const scheduleOwned = ref<Set<number>>(new Set())
 
-function toMinutes(hhmm: string) {
-  const [h, m] = hhmm.split(':').map(Number)
-  return h * 60 + m
-}
-
 function isWindowActive(s: Schedule, now: Date) {
   if (!s.enabled) return false
   if (!s.daysOfWeek.includes(now.getDay())) return false

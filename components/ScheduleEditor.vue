@@ -51,12 +51,42 @@ function summarizeDays(days: number[]) {
   return [...days].sort().map((d) => DAY_LABELS[d]).join(', ')
 }
 
-async function createSchedule() {
+// Schedule interlock: creating (or re-enabling) a schedule that overlaps an
+// enabled one prompts a bypassable warning, mirroring the relay toggle —
+// another relay would run two pumps at once; the same relay is a duplicate.
+const pendingConflict = ref<{
+  conflicts: Schedule[]
+  action: 'create' | 'enable'
+  schedule?: Schedule
+} | null>(null)
+
+function onAddClick() {
   formError.value = null
   if (form.daysOfWeek.length === 0) {
     formError.value = 'Select at least one day'
     return
   }
+  const conflicts = findScheduleConflicts(form, props.schedules)
+  if (conflicts.length > 0) {
+    pendingConflict.value = { conflicts, action: 'create' }
+    return
+  }
+  submitSchedule()
+}
+
+function confirmConflict() {
+  const pending = pendingConflict.value
+  pendingConflict.value = null
+  if (!pending) return
+  if (pending.action === 'create') submitSchedule()
+  else if (pending.schedule) patchEnabled(pending.schedule, true)
+}
+
+function cancelConflict() {
+  pendingConflict.value = null
+}
+
+async function submitSchedule() {
   busy.value = true
   try {
     await $fetch('/api/schedule', {
@@ -78,12 +108,27 @@ async function createSchedule() {
   }
 }
 
-async function toggleEnabled(schedule: Schedule) {
+function toggleEnabled(schedule: Schedule) {
+  const next = !schedule.enabled
+
+  // Turning ON may create an overlap that was invisible while disabled → warn.
+  if (next) {
+    const conflicts = findScheduleConflicts(schedule, props.schedules, schedule.id)
+    if (conflicts.length > 0) {
+      pendingConflict.value = { conflicts, action: 'enable', schedule }
+      return
+    }
+  }
+
+  patchEnabled(schedule, next)
+}
+
+async function patchEnabled(schedule: Schedule, enabled: boolean) {
   busy.value = true
   try {
     await $fetch(`/api/schedule/${schedule.id}`, {
       method: 'PATCH',
-      body: { enabled: !schedule.enabled },
+      body: { enabled },
     })
     emit('changed')
   } finally {
@@ -91,14 +136,23 @@ async function toggleEnabled(schedule: Schedule) {
   }
 }
 
-async function deleteSchedule(schedule: Schedule) {
+// Delete confirmation
+const pendingDelete = ref<Schedule | null>(null)
+
+async function confirmDelete() {
+  if (!pendingDelete.value) return
   busy.value = true
   try {
-    await $fetch(`/api/schedule/${schedule.id}`, { method: 'DELETE' })
+    await $fetch(`/api/schedule/${pendingDelete.value.id}`, { method: 'DELETE' })
     emit('changed')
   } finally {
     busy.value = false
+    pendingDelete.value = null
   }
+}
+
+function cancelDelete() {
+  pendingDelete.value = null
 }
 </script>
 
@@ -128,7 +182,7 @@ async function deleteSchedule(schedule: Schedule) {
           </button>
           <button type="button" :disabled="busy"
             class="text-gray-300 hover:text-red-500 transition-colors disabled:opacity-50"
-            title="Delete schedule" @click="deleteSchedule(s)">
+            title="Delete schedule" @click="pendingDelete = s">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -180,9 +234,85 @@ async function deleteSchedule(schedule: Schedule) {
         <span v-else />
         <button type="button" :disabled="busy"
           class="px-3 py-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium transition-colors disabled:opacity-50"
-          @click="createSchedule">
+          @click="onAddClick">
           Add schedule
         </button>
+      </div>
+    </div>
+
+    <!-- Schedule conflict warning dialog -->
+    <div v-if="pendingConflict"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      @click.self="cancelConflict">
+      <div class="bg-white rounded-xl shadow-xl max-w-sm w-full p-5">
+        <div class="flex items-start gap-3">
+          <svg class="w-6 h-6 text-amber-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <div class="min-w-0">
+            <h4 class="text-sm font-semibold text-gray-900">Overlapping schedule</h4>
+            <p class="text-sm text-gray-600 mt-1">
+              {{ pendingConflict.action === 'enable' ? 'Enabling this schedule overlaps' : 'This schedule overlaps' }}
+              the watering schedules below — another zone would run two pumps
+              at once; the same zone would water twice.
+            </p>
+            <ul class="mt-2 space-y-1">
+              <li v-for="c in pendingConflict.conflicts" :key="c.id" class="text-sm text-gray-800">
+                <strong>{{ relayName(c.relayChannel) }}</strong> · {{ c.startTime }}
+                for {{ c.durationMinutes }} min
+                <span class="text-gray-400">({{ summarizeDays(c.daysOfWeek) }})</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-5">
+          <button
+            class="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm font-medium transition-colors"
+            @click="cancelConflict">
+            Cancel
+          </button>
+          <button
+            class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-colors"
+            @click="confirmConflict">
+            {{ pendingConflict.action === 'enable' ? 'Enable anyway' : 'Add anyway' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete confirmation dialog -->
+    <div v-if="pendingDelete"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      @click.self="cancelDelete">
+      <div class="bg-white rounded-xl shadow-xl max-w-sm w-full p-5">
+        <div class="flex items-start gap-3">
+          <svg class="w-6 h-6 text-red-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          <div class="min-w-0">
+            <h4 class="text-sm font-semibold text-gray-900">Delete schedule?</h4>
+            <p class="text-sm text-gray-600 mt-1">
+              <strong>{{ relayName(pendingDelete.relayChannel) }}</strong> · {{ pendingDelete.startTime }}
+              for {{ pendingDelete.durationMinutes }} min
+              <span class="text-gray-400">({{ summarizeDays(pendingDelete.daysOfWeek) }})</span>
+              will stop watering on this schedule. This cannot be undone.
+            </p>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-5">
+          <button
+            class="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm font-medium transition-colors"
+            @click="cancelDelete">
+            Cancel
+          </button>
+          <button :disabled="busy"
+            class="px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50"
+            @click="confirmDelete">
+            Delete
+          </button>
+        </div>
       </div>
     </div>
   </div>

@@ -351,6 +351,8 @@ relayChannels: [                    // seeds Relay rows + labels the UI
   { channel: 3, name: 'Zone C' },
 ],
 relayScheduleCheckInterval: 60_000, // in-app scheduler tick (ms)
+deviceOnlineThreshold: 20 * 60_000, // header badge: newest reading fresher than this ⇒ "Connected" via WiFi
+                                    // (env: NUXT_PUBLIC_DEVICE_ONLINE_THRESHOLD, ms)
 ```
 - `telemetryDefaultRange` — default time window on dashboard load.
 - `relayChannels` — number/names of relays; drives both DB seeding and the control UI.
