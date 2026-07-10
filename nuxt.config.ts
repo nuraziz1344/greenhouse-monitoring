@@ -62,7 +62,21 @@ export default defineNuxtConfig({
           sizes: '512x512',
           type: 'image/png',
         },
+        {
+          // Dedicated maskable render (artwork inset on a full-bleed theme-color
+          // background) so Android's circle/squircle crop never clips it.
+          src: '/icons/icon-maskable-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable',
+        },
       ],
+    },
+    // Register the service worker in `nuxt dev` too, so the install prompt and
+    // offline caching can be tested locally without a full production build.
+    devOptions: {
+      enabled: true,
+      type: 'module',
     },
     workbox: {
       navigateFallback: '/',
@@ -88,6 +102,11 @@ export default defineNuxtConfig({
       meta: [
         { name: 'description', content: 'IoT Greenhouse Environmental Monitoring System' },
         { name: 'theme-color', content: '#10b981' },
+      ],
+      link: [
+        { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' },
+        { rel: 'icon', type: 'image/png', sizes: '192x192', href: '/icons/icon-192x192.png' },
+        { rel: 'apple-touch-icon', sizes: '192x192', href: '/icons/icon-192x192.png' },
       ],
     },
   },
