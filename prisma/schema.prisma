@@ -9,11 +9,29 @@ datasource db {
 
 model Telemetry {
     id           BigInt    @id @default(autoincrement())
+    sensorId     Int       @default(1) @map("sensor_id") // physical sensor unit (1..N, see runtimeConfig.public.soilSensors)
     soilMoisture Float     @map("soil_moisture")
     recordedAt   DateTime? @map("recorded_at")
     createdAt    DateTime  @default(now()) @map("created_at")
 
+    // Dedup guard: the same reading can arrive twice (BLE re-sync after a lost
+    // ack, or WiFi single-post + BLE batch overlap). Inserts use skipDuplicates.
+    // Includes sensorId so two sensors reporting the same value at the same
+    // instant aren't mistaken for a duplicate of each other.
+    @@unique([sensorId, recordedAt, soilMoisture])
+    @@index([sensorId])
     @@map("telemetry")
+}
+
+// Single-row (id=1) device-wide settings, seeded on first GET /api/config and
+// pushed to the ESP32 over BLE together with the schedules.
+model DeviceConfig {
+    id                     Int      @id @default(1)
+    measureIntervalMinutes Int      @default(15) @map("measure_interval_minutes")
+    lowMoistureThreshold   Float    @default(40) @map("low_moisture_threshold")
+    updatedAt              DateTime @updatedAt @map("updated_at")
+
+    @@map("device_config")
 }
 
 // A physical water-pump relay channel. Seeded (1 row per configured channel)

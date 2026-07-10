@@ -4,9 +4,13 @@
  * Bulk-inserts soil moisture readings synced from ESP32 LittleFS history via BLE.
  * Accepts up to 500 readings in a single request.
  *
- * Body: { readings: [{ soilMoisture: number, recordedAt?: string }] }
+ * Body: { readings: [{ soilMoisture: number, sensorId?: number, recordedAt?: string }] }
+ * `sensorId` identifies which physical sensor unit took each reading (see
+ * runtimeConfig.public.soilSensors); omitted per-item defaults to sensor 1.
  *
- * Returns 201 with the count of inserted records.
+ * Returns 201 with the count of inserted records. Readings that already exist
+ * (same sensorId + recordedAt + soilMoisture) are silently skipped, so
+ * re-syncing the same ESP32 history buffer never creates duplicate rows.
  */
 export default defineEventHandler(async (event) => {
   const body = await readBody(event)
@@ -25,7 +29,7 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const data: { soilMoisture: number; recordedAt: Date }[] = []
+  const data: { sensorId: number; soilMoisture: number; recordedAt: Date }[] = []
 
   for (let i = 0; i < body.readings.length; i++) {
     const item = body.readings[i]
@@ -38,8 +42,11 @@ export default defineEventHandler(async (event) => {
       })
     }
 
+    const sensorId = resolveSensorId(item?.sensorId)
+
     // Default to current server time so recordedAt is never stored as null.
-    const entry: { soilMoisture: number; recordedAt: Date } = {
+    const entry: { sensorId: number; soilMoisture: number; recordedAt: Date } = {
+      sensorId,
       soilMoisture,
       recordedAt: new Date(),
     }
@@ -54,18 +61,24 @@ export default defineEventHandler(async (event) => {
     data.push(entry)
   }
 
-  const result = await prisma.telemetry.createMany({ data })
+  const result = await prisma.telemetry.createMany({ data, skipDuplicates: true })
 
-  // Fire one grouped alert if any reading is critically low
-  const criticalReadings = data.filter((r) => r.soilMoisture < 40)
-  if (criticalReadings.length > 0) {
-    const lowest = Math.min(...criticalReadings.map((r) => r.soilMoisture))
-    sendAlert({ soilMoisture: lowest }).catch((err) => {
+  // Fire one grouped alert per sensor that has any critically-low reading.
+  const criticalBySensor = new Map<number, number>()
+  for (const r of data) {
+    if (r.soilMoisture >= 40) continue
+    const current = criticalBySensor.get(r.sensorId)
+    if (current === undefined || r.soilMoisture < current) {
+      criticalBySensor.set(r.sensorId, r.soilMoisture)
+    }
+  }
+  for (const [sensorId, lowest] of criticalBySensor) {
+    sendAlert({ soilMoisture: lowest, sensorId }).catch((err) => {
       console.error('Alert dispatch failed:', err)
     })
   }
 
-  console.log(`[Batch] Inserted ${result.count} readings`)
+  console.log(`[Batch] Inserted ${result.count}/${data.length} readings (duplicates skipped)`)
 
   setResponseStatus(event, 201)
   return {

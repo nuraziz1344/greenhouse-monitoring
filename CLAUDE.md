@@ -8,24 +8,39 @@
 
 ## 🌱 Project Overview
 
-A real-time soil moisture monitoring dashboard for greenhouse operations. An ESP32 sensor
-measures soil moisture and communicates via **Bluetooth Low Energy (BLE)** to a mobile PWA.
-The PWA shows live readings and syncs stored history from the ESP32 to the cloud.
+A real-time soil moisture monitoring dashboard for greenhouse operations, tracking **two physical
+soil-moisture sensor units** (`sensorId` 1 and 2, see `runtimeConfig.public.soilSensors`). An
+ESP32 measures soil moisture and communicates via **Bluetooth Low Energy (BLE)** to a mobile PWA,
+and (once provisioned) directly over **WiFi**. The PWA shows live readings per sensor, syncs
+stored history from the ESP32 to the cloud, pushes device configuration (schedules + settings)
+back down to the ESP32, and can provision a new device's WiFi credentials — all over BLE.
+**Note:** current firmware reports one reading per cycle with no sensor identifier yet — see the
+gap noted in `API_INTEGRATION.md` §9. Full protocol detail is
+in `API_INTEGRATION.md`.
 
 ### Architecture
 
 ```
-ESP32 (BLE peripheral)
-  └─ BLE GATT ──► Nuxt PWA (Web Bluetooth API — Android Chrome)
-                    ├─ Realtime: live soil moisture from GATT notifications
-                    ├─ Sync: bulk upload ESP32 LittleFS history → POST /api/telemetry/batch
-                    └─ Offline: GET /api/telemetry from cloud when BLE disconnected
-                         └─ Vercel Serverless (Nitro) → Supabase PostgreSQL
+ESP32 (BLE peripheral, WiFi client once provisioned)
+  ├─ BLE GATT ──► Nuxt PWA (Web Bluetooth API — Android Chrome)
+  │                 ├─ Realtime: live soil moisture from GATT notifications
+  │                 ├─ History sync: streaming pull (WRITE 0x01 → NOTIFY×N → done → ack 0x02)
+  │                 │    → POST /api/telemetry/batch
+  │                 ├─ Config push: GET /api/config → framed BLE writes (settings + schedules)
+  │                 ├─ Time sync: WRITE epoch-ms, first thing on every connect
+  │                 └─ WiFi provisioning: WRITE {ssid,password,serverUrl} → NOTIFY status
+  │                      └─ Vercel Serverless (Nitro) → Supabase PostgreSQL
+  └─ WiFi (once provisioned) ──► POST /api/telemetry directly, no phone required
+                                   (BLE stays available for config/history/re-provisioning)
 ```
 
-### Two Modes
-- **BLE Connected**: Live readings update the metric card directly; "Sync History" uploads ESP32 LittleFS data
-- **Cloud Mode** (BLE disconnected): Dashboard polls `GET /api/telemetry` every 30s, shows cloud history
+### Three Modes
+- **BLE Connected**: Live readings update the metric card directly; history syncs automatically
+  on connect (and via the manual button); config pushes to the device.
+- **WiFi Direct** (device provisioned, phone not needed): ESP32 posts telemetry straight to the
+  cloud on its own measurement cadence; runs whatever schedule was last pushed to it over BLE.
+- **Cloud Mode** (BLE disconnected, viewing only): Dashboard polls `GET /api/telemetry` every
+  30s, shows cloud history regardless of how it got there.
 
 ### Time Range Selection
 The dashboard includes a segmented time-range selector (1H / 6H / 24H / 7D / All, **default 24H**).
@@ -42,19 +57,22 @@ are correctly excluded from narrow windows.
 
 ### Water Pump Relay Control
 Controls **3 water-pump relay channels** (default names Zone A/B/C), each toggleable manually or
-on a recurring daily schedule. Because the ESP32 is BLE-only (no cloud→device link), all control
-flows **app → ESP32 over BLE** via a new WRITE command characteristic; the app also persists all
-state to the DB (works in cloud/mock mode — the pump only physically actuates when BLE-connected).
+on a recurring daily schedule. Control flows **app → ESP32 over BLE** via the Config WRITE
+characteristic; the app also persists all state to the DB (works in cloud/mock mode — the pump
+only physically actuates when BLE-connected, or autonomously via the on-device schedule runner
+once WiFi is provisioned — see BLE Protocol below).
 - **Single-active interlock:** only one relay should run at once (electrical load). Turning on a
   second relay shows a **bypassable warning** dialog — enforced in the UI only, not the server.
 - **Scheduling runs "both" ways:** schedules live in the DB (source of truth). On connect / change
-  the app **pushes them to the ESP32 over BLE** (`{ type:'schedule', ... }`) so firmware can run
-  them autonomously, **and** an in-app scheduler (`relayScheduleCheckInterval`) enacts due windows
-  while the dashboard is open + connected. The in-app scheduler only "owns" (auto-offs) relays it
-  turned on — it never turns off a relay the user switched on manually.
+  the app **pushes the full config bundle to the ESP32 over BLE** (`cfgbegin`/`sched`/`cfgend`
+  frames — see BLE Protocol) so firmware can run schedules autonomously, **and** an in-app
+  scheduler (`relayScheduleCheckInterval`) enacts due windows while the dashboard is open +
+  connected. The in-app scheduler only "owns" (auto-offs) relays it turned on — it never turns off
+  a relay the user switched on manually. Same rule applies on-device: a manual `{type:'relay'}`
+  command overrides the schedule until that channel's due-state next changes.
 - **BLE command payloads** (written to `ble.commandCharUuid`):
-  `{ type:'relay', channel, on }` and
-  `{ type:'schedule', schedules:[{ channel, startTime, durationMinutes, daysOfWeek, enabled }] }`.
+  `{ type:'relay', channel, on }` for manual toggles, and the framed
+  `cfgbegin`/`sched`×N/`cfgend` sequence for the full config bundle (§5.5 of `API_INTEGRATION.md`).
   In mock mode (`?mockBle=1`) `sendCommand` just logs — the DB path still exercises the full flow.
 
 ---
@@ -66,7 +84,9 @@ state to the DB (works in cloud/mock mode — the pump only physically actuates 
 ├── pages/
 │   └── index.vue                        # Main dashboard
 ├── components/
-│   ├── BLEConnection.vue                # BLE state machine (connect, sync, sendCommand, mock)
+│   ├── BLEConnection.vue                # BLE state machine (connect, streaming sync, config
+│   │                                     #   push, WiFi provisioning, mock)
+│   ├── WifiProvisionPanel.vue            # WiFi Setup form (SSID/password/serverUrl over BLE)
 │   ├── MetricCard.vue                   # Soil moisture display card
 │   ├── TelemetryChart.vue               # Soil moisture trend (Chart.js)
 │   ├── TelemetryTable.vue               # History log table (recordedAt vs createdAt)
@@ -74,10 +94,10 @@ state to the DB (works in cloud/mock mode — the pump only physically actuates 
 │   └── ScheduleEditor.vue               # Watering schedule CRUD UI
 ├── server/
 │   ├── api/
-│   │   ├── telemetry.post.ts            # POST /api/telemetry (single reading)
+│   │   ├── telemetry.post.ts            # POST /api/telemetry (single reading, dedup-safe)
 │   │   ├── telemetry.get.ts             # GET /api/telemetry?range=&limit=
 │   │   ├── telemetry/
-│   │   │   └── batch.post.ts            # POST /api/telemetry/batch (bulk sync)
+│   │   │   └── batch.post.ts            # POST /api/telemetry/batch (bulk sync, skipDuplicates)
 │   │   ├── relay.get.ts                 # GET /api/relay (seeds + lists relays)
 │   │   ├── relay.post.ts               # POST /api/relay (set state + log)
 │   │   ├── schedule.get.ts             # GET /api/schedule
@@ -85,15 +105,19 @@ state to the DB (works in cloud/mock mode — the pump only physically actuates 
 │   │   ├── schedule/
 │   │   │   ├── [id].patch.ts           # PATCH /api/schedule/:id
 │   │   │   └── [id].delete.ts          # DELETE /api/schedule/:id
+│   │   ├── config.get.ts               # GET /api/config (device settings + enabled schedules)
+│   │   ├── config.patch.ts             # PATCH /api/config (settings only)
 │   │   ├── actuation.get.ts            # GET /api/actuation (relay history)
 │   │   ├── openapi.ts                   # OpenAPI spec (v2.0)
 │   │   └── openapi.json.get.ts
 │   └── utils/
 │       ├── prisma.ts                    # Prisma Client singleton
 │       ├── alerts.ts                    # sendAlert() helper (auto-imported by Nitro)
-│       └── schedule.ts                  # schedule validation + serialization helpers
+│       ├── schedule.ts                  # schedule validation + serialization helpers
+│       └── deviceConfig.ts              # getDeviceConfigBundle() shared by config.get/patch
 ├── prisma/
-│   └── schema.prisma                    # Telemetry, Relay, Schedule, ActuationLog
+│   └── schema.prisma                    # Telemetry (unique dedup), Relay, Schedule,
+│                                         #   ActuationLog, DeviceConfig
 ├── layouts/
 │   └── default.vue                      # Header with BLE status dot, footer
 ├── scripts/
@@ -134,54 +158,69 @@ npx tsx scripts/simulate-esp32.ts --batch
 
 ## 🔵 BLE Protocol
 
-The PWA uses the **Web Bluetooth API** (Android Chrome / Chromium only).
+The PWA uses the **Web Bluetooth API** (Android Chrome / Chromium only). Full protocol detail
+(exact frame sequences, WiFi provisioning) lives in `API_INTEGRATION.md` §4–5; summary:
 
 | Item | Value |
 |------|-------|
 | Service UUID | `4fafc201-1fb5-459e-8fcc-c5c9c331914b` |
-| Realtime Characteristic | `beb5483e-36e1-4688-b7f5-ea07361b26a8` (NOTIFY, JSON `{"soilMoisture":62.4}`) |
-| History Characteristic | `1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e` (READ, JSON array `[{soilMoisture, recordedAt}]`) |
-| Command Characteristic | `a8261b36-3f5e-4a2c-9b1d-2e6f7c8a9b01` (WRITE, JSON relay/schedule commands — see Relay Control) |
+| Realtime Characteristic | `beb5483e-36e1-4688-b7f5-ea07361b26a8` (NOTIFY, JSON `{"sensorId":1,"soilMoisture":62.4}` — `sensorId` optional, defaults to 1) |
+| History Characteristic | `1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e` (WRITE `0x01`=dump/`0x02`=ack + NOTIFY stream, one JSON record per frame, ending `{"done":true,"total":N}`) |
+| Config Characteristic | `a8261b36-3f5e-4a2c-9b1d-2e6f7c8a9b01` (WRITE, JSON: `{type:'relay'}` immediate toggle, or framed `cfgbegin`/`sched`×N/`cfgend` to push settings + schedules — see Relay Control) |
+| Time-Sync Characteristic | `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (WRITE, ASCII epoch-ms; written first on every connect) |
+| Provision Characteristic | `c47d1b6a-9d1e-4f6b-8f2e-3a5c7d9e0f12` (WRITE `{ssid,password,serverUrl}` + NOTIFY `{"wifi":"connecting"\|"connected"\|"failed",...}` — WiFi setup for a new device) |
 | Device Name Filter | `GH-Sensor` (configurable via `NUXT_PUBLIC_BLE_DEVICE_NAME`) |
 
-`BLEConnection.vue` exposes `sendCommand(payload)` (via `defineExpose`) which writes JSON to the
-command characteristic (`writeValueWithResponse`); `pages/index.vue` calls it through a template ref.
+`BLEConnection.vue` exposes `sendCommand(payload)`, `syncHistory()`, and `provisionWifi(creds)`
+(via `defineExpose`); `pages/index.vue` calls them through a template ref. On connect, the
+component writes Time-Sync, emits `ready`, and `pages/index.vue` responds by pushing the config
+bundle (`GET /api/config` → framed BLE writes) and auto-running history sync.
 
-**Mock mode:** `?mockBle=1` query param skips BLE and uses synthetic data — works in any browser.
+**Mock mode:** `?mockBle=1` query param skips BLE and uses synthetic data (including a fake
+WiFi-provision success) — works in any browser.
 
 ---
 
 ## 📊 API Endpoints
 
 ### `POST /api/telemetry`
-Single soil moisture reading. The `recordedAt` field defaults to the current server time if not supplied.
+Single soil moisture reading. `sensorId` identifies which of the **two soil-moisture sensor
+units** took it (see `runtimeConfig.public.soilSensors`); optional, defaults to `1` so
+single-sensor firmware payloads keep working unmodified. The `recordedAt` field defaults to the
+current server time if not supplied. Duplicate `(sensorId, recordedAt, soilMoisture)` triples are
+silently ignored (`200`), not an error — this lets the same reading arrive via WiFi direct-post
+and a later BLE re-sync without creating two rows.
 
-**Request (recordedAt optional):**
+**Request (sensorId, recordedAt optional):**
 ```json
 { "soilMoisture": 55.0 }
 ```
-or with explicit timestamp:
+or with sensor + explicit timestamp:
 ```json
-{ "soilMoisture": 55.0, "recordedAt": "2026-06-25T10:00:00Z" }
+{ "soilMoisture": 55.0, "sensorId": 2, "recordedAt": "2026-06-25T10:00:00Z" }
 ```
 
-**Response:**
+**Response (new reading):**
 ```json
 { "id": "12345", "message": "Telemetry recorded" }
 ```
+**Response (duplicate):** `200 { "message": "Duplicate ignored" }`
 
-Alert fires if `soilMoisture < 40%`.
+Alert fires if `soilMoisture < 40%` (names the sensor if `sensorId` was given).
 
 ### `POST /api/telemetry/batch`
-Bulk sync from ESP32 LittleFS. Max 500 readings. Like single POST, items without `recordedAt` default
-to server time.
+Bulk sync from ESP32 LittleFS via the BLE streaming History protocol. Max 500 readings per call.
+Like single POST, items without `sensorId`/`recordedAt` default to sensor 1 / server time, and
+duplicates (by `sensorId` + `recordedAt` + `soilMoisture`) are silently skipped — `count`
+reflects only newly-inserted rows, so re-syncing the same device buffer twice is safe. Low-
+moisture alerts fire once per sensor that has a critical reading in the batch.
 
-**Request (recordedAt optional per item):**
+**Request (sensorId, recordedAt optional per item):**
 ```json
 {
   "readings": [
-    { "soilMoisture": 62.4, "recordedAt": "2026-06-25T08:00:00Z" },
-    { "soilMoisture": 58.1 }
+    { "soilMoisture": 62.4, "sensorId": 1, "recordedAt": "2026-06-25T08:00:00Z" },
+    { "soilMoisture": 58.1, "sensorId": 2 }
   ]
 }
 ```
@@ -191,17 +230,19 @@ to server time.
 { "count": 2, "message": "Batch recorded" }
 ```
 
-### `GET /api/telemetry?range=24h&limit=1000`
+### `GET /api/telemetry?range=24h&limit=1000&sensorId=1`
 Retrieve historical readings within a time window.
 
 **Query params:**
 - `range` (optional): one of `1h`, `6h`, `24h` (default), `7d`, `all`
 - `limit` (optional): max records to return (default: 1000, max: 1000)
+- `sensorId` (optional): filter to one sensor unit; omitted returns both sensors mixed together,
+  each record tagged with its `sensorId`
 
 **Response:**
 ```json
 [
-  { "id": "string", "soilMoisture": 62.4, "recordedAt": "2026-06-25T10:00:00Z", "createdAt": "2026-06-25T10:00:05Z" }
+  { "id": "string", "sensorId": 1, "soilMoisture": 62.4, "recordedAt": "2026-06-25T10:00:00Z", "createdAt": "2026-06-25T10:00:05Z" }
 ]
 ```
 
@@ -219,8 +260,14 @@ even if it was uploaded recently).
   (`{ relayChannel, startTime:"HH:MM", durationMinutes, daysOfWeek?, enabled? }`).
 - `PATCH /api/schedule/:id` — partial update (e.g. toggle `enabled`); `DELETE /api/schedule/:id`.
 - `GET /api/actuation?channel=&limit=` — relay on/off history, newest first.
+- `GET /api/config` — `{ settings: { measureIntervalMinutes, lowMoistureThreshold }, schedules: [...enabled only...], version }`.
+  This is the bundle the PWA pushes to the ESP32 over BLE (Config characteristic, framed
+  `cfgbegin`/`sched`/`cfgend`). Seeds the single `DeviceConfig` row on first call.
+- `PATCH /api/config` — `{ measureIntervalMinutes?, lowMoistureThreshold? }`; updates settings only
+  (schedules keep their own CRUD above). Returns the full bundle.
 
-Shared validation/serialization lives in `server/utils/schedule.ts` (auto-imported by Nitro).
+Shared validation/serialization lives in `server/utils/schedule.ts` and `server/utils/deviceConfig.ts`
+(auto-imported by Nitro).
 
 ---
 
@@ -229,10 +276,20 @@ Shared validation/serialization lives in `server/utils/schedule.ts` (auto-import
 ```prisma
 model Telemetry {
   id           BigInt    @id @default(autoincrement())
+  sensorId     Int       @default(1) @map("sensor_id")  // physical sensor unit (1..N, see soilSensors)
   soilMoisture Float     @map("soil_moisture")
   recordedAt   DateTime  @map("recorded_at")   // measurement time (defaults to server time if not supplied)
   createdAt    DateTime  @default(now()) @map("created_at")  // server receipt time
+  @@unique([sensorId, recordedAt, soilMoisture]) // dedup guard — see BLE sync / WiFi dual-path note below
   @@map("telemetry")
+}
+
+model DeviceConfig {              // single row (id=1): device-wide settings
+  id                     Int      @id @default(1)
+  measureIntervalMinutes Int      @default(15) @map("measure_interval_minutes")
+  lowMoistureThreshold   Float    @default(40) @map("low_moisture_threshold")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+  @@map("device_config")
 }
 
 model Relay {              // one row per physical relay channel (seeded from config)
@@ -271,6 +328,19 @@ model ActuationLog {       // append-only relay on/off history
 - `createdAt`: server receipt time (always set by database default).
 - For batch-synced ESP32 history: `recordedAt` holds the original ESP32 measurement time;
   `createdAt` holds the upload time.
+- **Telemetry dedup:** `@@unique([sensorId, recordedAt, soilMoisture])` + `createMany({
+  skipDuplicates: true })` on the batch endpoint (and a caught `P2002` on the single endpoint)
+  makes re-posting the same reading a no-op instead of a duplicate row — needed because a reading
+  can legitimately arrive twice (WiFi direct-post + a later BLE re-sync of the same buffered
+  record; a lost BLE sync ack). `sensorId` is part of the key so two sensors reporting the same
+  value at the same instant aren't mistaken for duplicates of each other.
+- **Soil sensors:** two physical units, identified by `Telemetry.sensorId` (default `1`, no
+  separate table — see `runtimeConfig.public.soilSensors` for labels, `server/utils/sensors.ts`
+  for validation/lookup helpers). `sensorId` is optional on every write endpoint for backward
+  compatibility with firmware that only reports one reading per cycle (current firmware — see
+  `API_INTEGRATION.md` §9 for this gap).
+- **DeviceConfig** is a single-row (id=1) table seeded on first `GET /api/config` call, same
+  create-if-missing pattern as `Relay`.
 - **Relay/Schedule/ActuationLog** use `relayChannel Int` (not FK relations) to stay consistent
   with the relation-free schema. `Relay` rows are seeded idempotently by `GET /api/relay` from
   `runtimeConfig.public.relayChannels`. `Schedule.daysOfWeek` is a Postgres `Int[]` scalar list.
@@ -313,10 +383,21 @@ avoid blocking the API response. Triggered by single POST and batch POST.
 
 - **Web Bluetooth**: Chrome/Chromium on Android only. Non-Chrome browsers see a fallback banner.
 - **reka-ui**: `Icon` not exported — use inline SVG everywhere.
-- **TypeScript 6**: If `BluetoothRemoteGATTCharacteristic` errors, add `@types/web-bluetooth` devDep.
+- **TypeScript 6**: `@types/web-bluetooth` is a devDep and wired into `nuxt.config.ts` →
+  `typescript.tsConfig.compilerOptions.types`; without that config entry `navigator.bluetooth` and
+  `BluetoothRemoteGATTCharacteristic` don't resolve even with the package installed.
 - **Prisma import**: `server/utils/prisma.ts` must import from `../../prisma/generated/client`, NOT `"@prisma/client"` — the main package is CJS-only and breaks Nuxt's ESM dev server.
 - **Vite cache**: clear `.nuxt/` and restart if imports break after schema changes.
 - **`recordedAt` timezone**: ESP32 firmware must emit UTC ISO 8601 strings.
+- **Telemetry unique index**: adding/changing a `@@unique(...)` on `Telemetry` on a DB with
+  existing duplicate rows makes `db push` fail with a data-loss warning. Dedupe first (query for
+  `count(*) - count(DISTINCT (sensor_id, recorded_at, soil_moisture))` before pushing) — this only
+  matters once, when a migration touching that index first lands on an existing database.
+- **Firmware doesn't send `sensorId` yet**: current ESP32 firmware reports one reading per cycle
+  with no sensor identifier. The API/dashboard both default omitted `sensorId` to `1`, so Sensor
+  2's card/series legitimately stays empty until firmware is updated to sample and label both
+  physical units — see `API_INTEGRATION.md` §9 for the open item. Not a bug to chase in the
+  dashboard code.
 
 ---
 
@@ -341,9 +422,16 @@ avoid blocking the API response. Triggered by single POST and batch POST.
 ### Runtime config (nuxt.config.ts → runtimeConfig.public)
 ```ts
 telemetryDefaultRange: '24h',       // 1h | 6h | 24h | 7d | all — default time window
+soilSensors: [                      // physical sensor units — drives dashboard cards/chart
+  { sensorId: 1, name: 'Sensor 1' }, // series and validates the optional sensorId on ingestion
+  { sensorId: 2, name: 'Sensor 2' },
+],
 ble: {
-  // ...serviceUuid / realtimeCharUuid / historyCharUuid
-  commandCharUuid: 'a8261b36-...',  // WRITE characteristic for relay/schedule commands
+  // ...serviceUuid / realtimeCharUuid
+  historyCharUuid: '1c95d5e3-...',   // WRITE 0x01/0x02 + NOTIFY stream (history sync)
+  commandCharUuid: 'a8261b36-...',   // WRITE: relay toggle + framed config push
+  timeSyncCharUuid: 'a1b2c3d4-...',  // WRITE: epoch-ms ASCII, written first on connect
+  provisionCharUuid: 'c47d1b6a-...', // WRITE creds + NOTIFY status — WiFi setup
 },
 relayChannels: [                    // seeds Relay rows + labels the UI
   { channel: 1, name: 'Zone A' },
@@ -355,10 +443,13 @@ deviceOnlineThreshold: 20 * 60_000, // header badge: newest reading fresher than
                                     // (env: NUXT_PUBLIC_DEVICE_ONLINE_THRESHOLD, ms)
 ```
 - `telemetryDefaultRange` — default time window on dashboard load.
+- `soilSensors` — number/names of soil-moisture sensor units; no DB seeding needed (unlike
+  relays, they have no mutable state), just labels + valid `sensorId` values for the API.
 - `relayChannels` — number/names of relays; drives both DB seeding and the control UI.
-- `commandCharUuid` — placeholder UUID; finalize with the firmware author.
+- All `ble.*CharUuid` values must match `esp32-monitoring-old/src/config.h` exactly — see
+  `API_INTEGRATION.md` §4 for the authoritative table and full protocol.
 
 ---
 
-**Last Updated:** 2026-07-06  
+**Last Updated:** 2026-07-09  
 **Status:** Active Development

@@ -47,6 +47,12 @@ configured webhook (Telegram/WhatsApp).
                     minimum: 0,
                     maximum: 100,
                   },
+                  sensorId: {
+                    type: 'integer',
+                    description:
+                      'Physical sensor unit (see runtimeConfig.public.soilSensors). Omit to default to sensor 1.',
+                    example: 1,
+                  },
                   recordedAt: {
                     type: 'string',
                     format: 'date-time',
@@ -73,6 +79,10 @@ configured webhook (Telegram/WhatsApp).
               },
             },
           },
+          '200': {
+            description:
+              'Duplicate ignored — an identical reading (same recordedAt + soilMoisture) already exists',
+          },
           '400': { description: 'Invalid payload' },
           '500': { description: 'Server error' },
         },
@@ -89,6 +99,13 @@ configured webhook (Telegram/WhatsApp).
             description: 'Number of records to return (max 1000)',
             schema: { type: 'integer', default: 50, minimum: 1, maximum: 1000 },
           },
+          {
+            name: 'sensorId',
+            in: 'query',
+            description:
+              'Filter to one physical sensor unit. Omitted returns all sensors mixed together, each tagged with sensorId.',
+            schema: { type: 'integer' },
+          },
         ],
         responses: {
           '200': {
@@ -101,6 +118,7 @@ configured webhook (Telegram/WhatsApp).
                     type: 'object',
                     properties: {
                       id: { type: 'string' },
+                      sensorId: { type: 'integer' },
                       soilMoisture: { type: 'number', format: 'float' },
                       recordedAt: { type: 'string', format: 'date-time', nullable: true },
                       createdAt: { type: 'string', format: 'date-time' },
@@ -118,7 +136,8 @@ configured webhook (Telegram/WhatsApp).
       post: {
         tags: ['Telemetry'],
         summary: 'Bulk-insert synced history from ESP32',
-        description: 'Upload up to 500 soil moisture readings synced from ESP32 LittleFS via BLE.',
+        description:
+          'Upload up to 500 soil moisture readings synced from ESP32 LittleFS via BLE. Readings that already exist (same sensorId + recordedAt + soilMoisture) are silently skipped, so re-syncing is safe.',
         operationId: 'submitTelemetryBatch',
         requestBody: {
           required: true,
@@ -141,6 +160,12 @@ configured webhook (Telegram/WhatsApp).
                           minimum: 0,
                           maximum: 100,
                         },
+                        sensorId: {
+                          type: 'integer',
+                          description:
+                            'Physical sensor unit (see runtimeConfig.public.soilSensors). Omit to default to sensor 1.',
+                          example: 1,
+                        },
                         recordedAt: {
                           type: 'string',
                           format: 'date-time',
@@ -162,7 +187,10 @@ configured webhook (Telegram/WhatsApp).
                 schema: {
                   type: 'object',
                   properties: {
-                    count: { type: 'integer', description: 'Number of records inserted' },
+                    count: {
+                      type: 'integer',
+                      description: 'Number of records inserted (duplicates excluded)',
+                    },
                     message: { type: 'string', example: 'Batch recorded' },
                   },
                 },
@@ -312,6 +340,61 @@ configured webhook (Telegram/WhatsApp).
         },
       },
     },
+    '/api/config': {
+      get: {
+        tags: ['Config'],
+        summary: 'Get the device configuration bundle',
+        description:
+          'Settings + enabled watering schedules, in the shape the PWA pushes to the ESP32 over BLE. Seeds the settings row on first call.',
+        operationId: 'getConfig',
+        responses: {
+          '200': {
+            description: 'Configuration bundle',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceConfigBundle' },
+              },
+            },
+          },
+        },
+      },
+      patch: {
+        tags: ['Config'],
+        summary: 'Update device settings',
+        description: 'Schedules have their own CRUD endpoints; this updates device-wide settings.',
+        operationId: 'updateConfig',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  measureIntervalMinutes: {
+                    type: 'integer',
+                    minimum: 1,
+                    maximum: 1440,
+                    example: 15,
+                  },
+                  lowMoistureThreshold: { type: 'number', minimum: 0, maximum: 100, example: 40 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Updated configuration bundle',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceConfigBundle' },
+              },
+            },
+          },
+          '400': { description: 'Invalid payload' },
+        },
+      },
+    },
     '/api/actuation': {
       get: {
         tags: ['Relay'],
@@ -330,8 +413,46 @@ configured webhook (Telegram/WhatsApp).
       },
     },
   },
+  components: {
+    schemas: {
+      DeviceConfigBundle: {
+        type: 'object',
+        properties: {
+          settings: {
+            type: 'object',
+            properties: {
+              measureIntervalMinutes: { type: 'integer', example: 15 },
+              lowMoistureThreshold: { type: 'number', example: 40 },
+            },
+          },
+          schedules: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                channel: { type: 'integer', example: 1 },
+                startTime: { type: 'string', example: '06:30' },
+                durationMinutes: { type: 'integer', example: 15 },
+                daysOfWeek: {
+                  type: 'array',
+                  items: { type: 'integer', minimum: 0, maximum: 6 },
+                },
+                enabled: { type: 'boolean' },
+              },
+            },
+          },
+          version: {
+            type: 'string',
+            format: 'date-time',
+            description: 'Timestamp of the most recent config change',
+          },
+        },
+      },
+    },
+  },
   tags: [
     { name: 'Telemetry', description: 'Soil moisture sensor data operations' },
     { name: 'Relay', description: 'Water-pump relay control and scheduling' },
+    { name: 'Config', description: 'Device configuration pushed to the ESP32 over BLE' },
   ],
 } as const

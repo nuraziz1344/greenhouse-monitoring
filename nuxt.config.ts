@@ -7,6 +7,15 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  // Web Bluetooth type declarations (navigator.bluetooth, GATT types)
+  typescript: {
+    tsConfig: {
+      compilerOptions: {
+        types: ['@types/web-bluetooth'],
+      },
+    },
+  },
+
   tailwindcss: {
     cssPath: '~/assets/css/main.css',
     config: {
@@ -93,12 +102,24 @@ export default defineNuxtConfig({
       // Override with NUXT_PUBLIC_DEVICE_ONLINE_THRESHOLD (ms).
       deviceOnlineThreshold: 20 * 60_000,
       telemetryDefaultRange: '24h', // one of: 1h | 6h | 24h | 7d | all
+      // Physical soil-moisture sensor units. Drives dashboard cards/chart series
+      // and validates the optional `sensorId` on telemetry ingestion — see
+      // API_INTEGRATION.md §2.1/§2.2. Telemetry rows default to sensorId 1 when
+      // omitted, so older single-sensor firmware keeps working unmodified.
+      soilSensors: [
+        { sensorId: 1, name: 'Sensor 1' },
+        { sensorId: 2, name: 'Sensor 2' },
+      ],
       ble: {
         deviceName: 'GH-Sensor',
         serviceUuid: '4fafc201-1fb5-459e-8fcc-c5c9c331914b',
         realtimeCharUuid: 'beb5483e-36e1-4688-b7f5-ea07361b26a8',
+        // WRITE 0x01 = request history dump (streamed back as notifications),
+        // WRITE 0x02 = ack upload → device clears its ring buffer.
         historyCharUuid: '1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e',
-        commandCharUuid: 'a8261b36-3f5e-4a2c-9b1d-2e6f7c8a9b01', // WRITE: relay/schedule commands
+        commandCharUuid: 'a8261b36-3f5e-4a2c-9b1d-2e6f7c8a9b01', // WRITE: relay/config commands
+        timeSyncCharUuid: 'a1b2c3d4-e5f6-7890-abcd-ef0123456789', // WRITE: epoch ms as ASCII
+        provisionCharUuid: 'c47d1b6a-9d1e-4f6b-8f2e-3a5c7d9e0f12', // WRITE creds + NOTIFY status
       },
       // Water-pump relay channels — seeds Relay rows and labels the UI.
       relayChannels: [

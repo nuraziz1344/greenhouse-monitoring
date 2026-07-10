@@ -26,6 +26,7 @@
     "@prisma/client": "^7.8.0",
     "@scalar/nuxt": "^0.6.46",
     "@types/pg": "^8.20.0",
+    "@types/web-bluetooth": "^0.0.21",
     "@vite-pwa/nuxt": "^1.1.1",
     "@vueuse/core": "^14.3.0",
     "chart.js": "^4.5.1",

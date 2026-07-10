@@ -1,6 +1,8 @@
 <script setup lang="ts">
 interface TelemetryRecord {
   id: string
+  sensorId: number
+  sensorName: string
   soilMoisture: number
   recordedAt: string | null
   createdAt: string
@@ -28,13 +30,17 @@ function formatDate(iso: string) {
         <thead>
           <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
             <th class="px-5 py-3">Time</th>
+            <th class="px-5 py-3">Sensor</th>
             <th class="px-5 py-3">Soil Moisture</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
-          <tr v-for="record in records" :key="record.id" class="hover:bg-gray-50 transition-colors">
+          <tr v-for="record in records" :key="`${record.sensorId}-${record.id}`" class="hover:bg-gray-50 transition-colors">
             <td class="px-5 py-3 text-gray-500 whitespace-nowrap">
               {{ formatDate(record.recordedAt ?? record.createdAt) }}
+            </td>
+            <td class="px-5 py-3 text-gray-500 whitespace-nowrap">
+              {{ record.sensorName }}
             </td>
             <td class="px-5 py-3">
               <span class="font-medium" :class="record.soilMoisture < 40 ? 'text-red-600' : 'text-gray-700'">
@@ -43,7 +49,7 @@ function formatDate(iso: string) {
             </td>
           </tr>
           <tr v-if="records.length === 0">
-            <td colspan="2" class="px-5 py-8 text-center text-gray-400">
+            <td colspan="3" class="px-5 py-8 text-center text-gray-400">
               No telemetry data recorded yet
             </td>
           </tr>

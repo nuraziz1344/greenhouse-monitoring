@@ -1,4 +1,4 @@
-export async function sendAlert(data: { soilMoisture: number }): Promise<void> {
+export async function sendAlert(data: { soilMoisture: number; sensorId?: number }): Promise<void> {
   const webhookUrl = process.env.ALERT_WEBHOOK_URL
 
   if (!webhookUrl) {
@@ -6,8 +6,10 @@ export async function sendAlert(data: { soilMoisture: number }): Promise<void> {
     return
   }
 
+  const label = data.sensorId !== undefined ? sensorName(data.sensorId) : null
+
   const message = `
-🚨 *Greenhouse Alert — Low Soil Moisture!*
+🚨 *Greenhouse Alert — Low Soil Moisture!*${label ? `\n- Sensor: ${label}` : ''}
 - Soil Moisture: ${data.soilMoisture.toFixed(1)}% (below 40% threshold)
 - Time: ${new Date().toISOString()}
   `.trim()

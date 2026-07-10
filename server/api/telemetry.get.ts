@@ -6,6 +6,9 @@
  * Query params:
  *   range (string, optional) — time window: 1h | 6h | 24h | 7d | all (default: 24h)
  *   limit (number, optional) — max records to return (default: 1000, max: 1000)
+ *   sensorId (number, optional) — filter to one physical sensor unit (see
+ *     runtimeConfig.public.soilSensors). Omitted returns all sensors mixed
+ *     together, each record tagged with its sensorId.
  *
  * Records are filtered and ordered by their effective time (recordedAt ?? createdAt),
  * matching how the dashboard chart and table display timestamps.
@@ -26,7 +29,9 @@ export default defineEventHandler(async (event) => {
   const rangeParam = String(query?.range ?? '24h')
   const range = rangeParam === 'all' || rangeParam in RANGE_MS ? rangeParam : '24h'
 
-  const where =
+  const sensorId = query?.sensorId !== undefined ? resolveSensorId(query.sensorId) : undefined
+
+  const timeWhere =
     range === 'all'
       ? undefined
       : (() => {
@@ -38,6 +43,13 @@ export default defineEventHandler(async (event) => {
             ],
           }
         })()
+
+  // Prisma ANDs sibling top-level keys, so sensorId and the time-range OR can
+  // simply be spread onto one where object rather than nested in an AND array.
+  const where =
+    sensorId !== undefined || timeWhere
+      ? { ...(sensorId !== undefined ? { sensorId } : {}), ...(timeWhere ?? {}) }
+      : undefined
 
   const records = await prisma.telemetry.findMany({
     where,
@@ -54,6 +66,7 @@ export default defineEventHandler(async (event) => {
     .sort((a, b) => effective(b) - effective(a))
     .map((record) => ({
       id: record.id.toString(),
+      sensorId: record.sensorId,
       soilMoisture: record.soilMoisture,
       recordedAt: record.recordedAt?.toISOString() ?? null,
       createdAt: record.createdAt.toISOString(),

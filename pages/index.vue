@@ -1,6 +1,7 @@
 <script setup lang="ts">
 interface TelemetryRecord {
   id: string
+  sensorId: number
   soilMoisture: number
   recordedAt: string | null
   createdAt: string
@@ -26,8 +27,23 @@ interface Schedule {
 
 const config = useRuntimeConfig()
 
+interface DeviceConfigBundle {
+  settings: { measureIntervalMinutes: number; lowMoistureThreshold: number }
+  schedules: Array<{
+    channel: number
+    startTime: string
+    durationMinutes: number
+    daysOfWeek: number[]
+    enabled: boolean
+  }>
+  version: string
+}
+
 // Handle to the BLE component so we can send outbound commands to the ESP32.
-const bleRef = ref<{ sendCommand: (payload: object) => Promise<void> } | null>(null)
+const bleRef = ref<{
+  sendCommand: (payload: object) => Promise<void>
+  syncHistory: () => Promise<void>
+} | null>(null)
 
 // Time range selection (default from runtime config)
 const RANGE_OPTIONS = [
@@ -39,9 +55,37 @@ const RANGE_OPTIONS = [
 ]
 const range = ref(config.public.telemetryDefaultRange)
 
-const { data, refresh, pending, error } = useFetch<TelemetryRecord[]>(
-  () => `/api/telemetry?range=${range.value}`,
-)
+// Two physical soil-moisture sensor units (runtimeConfig.public.soilSensors).
+// One useFetch per sensor — the array is a fixed build-time config, not
+// reactive state, so the number/order of composable calls never changes.
+const soilSensors = config.public.soilSensors as Array<{ sensorId: number; name: string }>
+const sensorFeeds = soilSensors.map((s) => {
+  const { data, refresh, pending, error } = useFetch<TelemetryRecord[]>(
+    () => `/api/telemetry?range=${range.value}&sensorId=${s.sensorId}`,
+  )
+  return { sensorId: s.sensorId, name: s.name, data, refresh, pending, error }
+})
+
+function refreshAll() {
+  return Promise.all(sensorFeeds.map((s) => s.refresh()))
+}
+
+const anyPending = computed(() => sensorFeeds.some((s) => s.pending.value))
+const firstError = computed(() => sensorFeeds.find((s) => s.error.value)?.error.value ?? null)
+const hasAnyData = computed(() => sensorFeeds.some((s) => (s.data.value?.length ?? 0) > 0))
+
+// All sensors' readings merged into one list, newest first — feeds the
+// combined chart/table so the two sensors can be compared side by side.
+const combinedRecords = computed(() => {
+  const merged = sensorFeeds.flatMap((s) =>
+    (s.data.value ?? []).map((r) => ({ ...r, sensorName: s.name })),
+  )
+  return merged.sort((a, b) => {
+    const ea = new Date(a.recordedAt ?? a.createdAt).getTime()
+    const eb = new Date(b.recordedAt ?? b.createdAt).getTime()
+    return eb - ea
+  })
+})
 
 // Relay + schedule state
 const { data: relays, refresh: refreshRelays } = useFetch<Relay[]>('/api/relay')
@@ -50,28 +94,35 @@ const { data: schedules, refresh: refreshSchedules } = useFetch<Schedule[]>('/ap
 // Auto-poll cloud data (regardless of BLE state)
 let interval: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
-  interval = setInterval(() => refresh(), config.public.telemetryPollInterval)
+  interval = setInterval(() => refreshAll(), config.public.telemetryPollInterval)
 })
 onUnmounted(() => {
   if (interval) clearInterval(interval)
 })
 
-// Latest cloud reading
-const latest = computed(() => {
-  if (!data.value || data.value.length === 0) return null
-  return data.value[0]
+// Latest cloud reading per sensor
+const latestBySensor = computed(() => {
+  const map: Record<number, TelemetryRecord | null> = {}
+  for (const s of sensorFeeds) {
+    map[s.sensorId] = s.data.value?.[0] ?? null
+  }
+  return map
 })
 
 // BLE state — driven by BLEConnection events
 const bleConnected = ref(false)
-const realtimeReading = ref<number | null>(null)
+const realtimeReadings = ref<Record<number, number | null>>({})
 
-// Value shown in the metric card: prefer live BLE when connected
-const displayMoisture = computed(() =>
-  bleConnected.value && realtimeReading.value !== null
-    ? realtimeReading.value
-    : latest.value?.soilMoisture ?? null
-)
+// Value shown per metric card: prefer live BLE when connected
+const displayMoistureBySensor = computed(() => {
+  const map: Record<number, number | null> = {}
+  for (const s of soilSensors) {
+    const live = realtimeReadings.value[s.sensorId]
+    map[s.sensorId] =
+      bleConnected.value && live != null ? live : latestBySensor.value[s.sensorId]?.soilMoisture ?? null
+  }
+  return map
+})
 
 function moistureStatus(val: number) {
   if (val < 30) return 'critical'
@@ -80,41 +131,52 @@ function moistureStatus(val: number) {
 }
 
 // Share device connection state with layout header. lastSeenAt is the
-// effective time of the newest cloud reading — the header treats a fresh
-// value as "connected via WiFi" when BLE is down.
+// effective time of the freshest reading across both sensors — the header
+// treats a fresh value as "connected via WiFi" when BLE is down.
 const esp32Status = useState<{ bleConnected: boolean; lastSeenAt: string | null }>(
   'esp32Status',
   () => ({ bleConnected: false, lastSeenAt: null }),
 )
 
-watch(latest, (record) => {
-  if (!record) return
-  const effective = record.recordedAt ?? record.createdAt
+watch(latestBySensor, (map) => {
+  let freshest: string | null = null
+  for (const record of Object.values(map)) {
+    if (!record) continue
+    const effective = record.recordedAt ?? record.createdAt
+    if (!freshest || new Date(effective) > new Date(freshest)) freshest = effective
+  }
+  if (!freshest) return
   // Only move forward — switching to a narrow time range must not regress it
   const prev = esp32Status.value.lastSeenAt
-  if (!prev || new Date(effective) > new Date(prev)) {
-    esp32Status.value = { ...esp32Status.value, lastSeenAt: effective }
+  if (!prev || new Date(freshest) > new Date(prev)) {
+    esp32Status.value = { ...esp32Status.value, lastSeenAt: freshest }
   }
-}, { immediate: true })
+}, { immediate: true, deep: true })
 
 function onConnectionChange(connected: boolean) {
   bleConnected.value = connected
   esp32Status.value = { ...esp32Status.value, bleConnected: connected }
   if (!connected) {
-    realtimeReading.value = null
-  } else {
-    // Sync schedules to the device and enact any window that's already due.
-    pushSchedulesToDevice()
-    runScheduler()
+    realtimeReadings.value = {}
   }
 }
 
-function onRealtimeReading(value: number) {
-  realtimeReading.value = value
+// Fired after connect + time-sync: push config, enact due windows, then pull
+// the device's buffered history automatically (manual Sync button still works).
+async function onReady() {
+  await pushConfigToDevice()
+  await runScheduler()
+  bleRef.value?.syncHistory().catch((err: unknown) => {
+    console.error('Auto history sync failed:', err)
+  })
+}
+
+function onRealtimeReading(sensorId: number, value: number) {
+  realtimeReadings.value = { ...realtimeReadings.value, [sensorId]: value }
 }
 
 function onSyncComplete() {
-  refresh()
+  refreshAll()
 }
 
 // ── Relay control ───────────────────────────────────────────────────────────
@@ -140,28 +202,41 @@ async function onRelayToggle(channel: number, isOn: boolean, source = 'manual') 
   await refreshRelays()
 }
 
-// Push the full schedule set to the device so firmware can run it autonomously.
-async function pushSchedulesToDevice() {
-  if (!bleConnected.value || !schedules.value) return
+// daysOfWeek array (0=Sun..6=Sat) → bitmask (bit0=Sun) for compact BLE frames.
+function daysToBitmask(days: number[]) {
+  return days.reduce((mask, d) => mask | (1 << d), 0)
+}
+
+// Push the server config bundle (settings + enabled schedules) to the device
+// as a framed sequence — each write stays far below the 512-byte GATT limit.
+// The firmware stages frames and commits atomically on cfgend.
+async function pushConfigToDevice() {
+  if (!bleConnected.value) return
   try {
-    await bleRef.value?.sendCommand({
-      type: 'schedule',
-      schedules: schedules.value.map((s) => ({
-        channel: s.relayChannel,
-        startTime: s.startTime,
-        durationMinutes: s.durationMinutes,
-        daysOfWeek: s.daysOfWeek,
-        enabled: s.enabled,
-      })),
-    })
+    const bundle = await $fetch<DeviceConfigBundle>('/api/config')
+    const send = bleRef.value?.sendCommand
+    if (!send) return
+
+    await send({ type: 'cfgbegin', settings: bundle.settings, count: bundle.schedules.length })
+    for (const s of bundle.schedules) {
+      await send({
+        type: 'sched',
+        c: s.channel,
+        s: s.startTime,
+        d: s.durationMinutes,
+        w: daysToBitmask(s.daysOfWeek),
+        e: s.enabled,
+      })
+    }
+    await send({ type: 'cfgend', count: bundle.schedules.length })
   } catch (err) {
-    console.error('Schedule push failed:', err)
+    console.error('Config push failed:', err)
   }
 }
 
 async function onSchedulesChanged() {
   await refreshSchedules()
-  await pushSchedulesToDevice()
+  await pushConfigToDevice()
 }
 
 // ── In-app scheduler (fallback while the dashboard is open + connected) ───────
@@ -214,26 +289,18 @@ onUnmounted(() => {
   if (scheduleInterval) clearInterval(scheduleInterval)
 })
 
-// Refresh timestamp
-const lastUpdated = ref(new Date())
-watch(data, () => { lastUpdated.value = new Date() })
-
-// Pagination
+// Pagination (over the combined, sensor-tagged record list)
 const recordsPerPage = 10
 const currentPage = ref(1)
 
 const paginatedRecords = computed(() => {
-  if (!data.value) return []
   const start = (currentPage.value - 1) * recordsPerPage
-  return data.value.slice(start, start + recordsPerPage)
+  return combinedRecords.value.slice(start, start + recordsPerPage)
 })
 
-const totalPages = computed(() => {
-  if (!data.value) return 0
-  return Math.ceil(data.value.length / recordsPerPage)
-})
+const totalPages = computed(() => Math.ceil(combinedRecords.value.length / recordsPerPage))
 
-watch(data, () => { currentPage.value = 1 })
+watch(combinedRecords, () => { currentPage.value = 1 })
 </script>
 
 <template>
@@ -257,8 +324,8 @@ watch(data, () => { currentPage.value = 1 })
           </button>
         </div>
         <button class="text-sm px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50
-           text-gray-600 transition-colors disabled:opacity-50" :disabled="pending" @click="refresh()">
-          {{ pending ? 'Refreshing...' : 'Refresh' }}
+           text-gray-600 transition-colors disabled:opacity-50" :disabled="anyPending" @click="refreshAll()">
+          {{ anyPending ? 'Refreshing...' : 'Refresh' }}
         </button>
       </div>
     </div>
@@ -270,6 +337,7 @@ watch(data, () => { currentPage.value = 1 })
         @realtime-reading="onRealtimeReading"
         @sync-complete="onSyncComplete"
         @connection-change="onConnectionChange"
+        @ready="onReady"
       />
     </ClientOnly>
 
@@ -279,7 +347,7 @@ watch(data, () => { currentPage.value = 1 })
       <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
       BLE Connected — showing live readings
     </div>
-    <div v-else-if="data && data.length > 0"
+    <div v-else-if="hasAnyData"
       class="flex items-center gap-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5">
       <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -289,13 +357,13 @@ watch(data, () => { currentPage.value = 1 })
     </div>
 
     <!-- Error State -->
-    <div v-if="error" class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
-      ⚠ Failed to load telemetry data: {{ error.message }}
-      <button class="underline ml-2 hover:no-underline" @click="refresh()">Retry</button>
+    <div v-if="firstError" class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
+      ⚠ Failed to load telemetry data: {{ firstError.message }}
+      <button class="underline ml-2 hover:no-underline" @click="refreshAll()">Retry</button>
     </div>
 
     <!-- Loading skeleton -->
-    <div v-if="pending && !data?.length">
+    <div v-if="anyPending && !hasAnyData">
       <div class="rounded-xl border border-gray-200 p-5 animate-pulse">
         <div class="h-4 bg-gray-200 rounded w-24 mb-4" />
         <div class="h-8 bg-gray-200 rounded w-20" />
@@ -303,7 +371,7 @@ watch(data, () => { currentPage.value = 1 })
     </div>
 
     <!-- Empty state -->
-    <div v-if="!pending && data && data.length === 0 && !bleConnected"
+    <div v-if="!anyPending && !hasAnyData && !bleConnected"
       class="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
       <div class="text-amber-600 font-medium text-lg mb-1">No Data Yet</div>
       <p class="text-amber-700/70 text-sm">
@@ -311,14 +379,16 @@ watch(data, () => { currentPage.value = 1 })
       </p>
     </div>
 
-    <!-- Metric Card -->
-    <div v-if="displayMoisture !== null">
+    <!-- Metric Cards, one per sensor -->
+    <div v-if="hasAnyData || bleConnected" class="grid gap-4 sm:grid-cols-2">
       <MetricCard
-        title="Soil Moisture"
-        :value="displayMoisture"
+        v-for="s in soilSensors"
+        :key="s.sensorId"
+        :title="`${s.name} — Soil Moisture`"
+        :value="displayMoistureBySensor[s.sensorId] ?? '—'"
         unit="%"
         icon="moisture"
-        :status="moistureStatus(displayMoisture)"
+        :status="displayMoistureBySensor[s.sensorId] != null ? moistureStatus(displayMoistureBySensor[s.sensorId]!) : 'normal'"
       />
     </div>
 
@@ -336,20 +406,20 @@ watch(data, () => { currentPage.value = 1 })
       @changed="onSchedulesChanged"
     />
 
-    <!-- Chart -->
-    <div v-if="data && data.length > 0">
-      <TelemetryChart :records="data" />
+    <!-- Chart (one series per sensor) -->
+    <div v-if="hasAnyData">
+      <TelemetryChart :sensors="sensorFeeds.map((s) => ({ name: s.name, records: s.data.value ?? [] }))" />
     </div>
 
-    <!-- Data Table -->
-    <div v-if="data && data.length > 0" class="space-y-4">
+    <!-- Data Table (combined, tagged with sensor) -->
+    <div v-if="hasAnyData" class="space-y-4">
       <TelemetryTable :records="paginatedRecords" />
 
       <!-- Pagination Controls -->
       <div class="flex items-center justify-between bg-white rounded-xl border border-gray-200 px-5 py-3">
         <div class="text-sm text-gray-600">
           Showing {{ (currentPage - 1) * recordsPerPage + 1 }}–{{ Math.min(currentPage * recordsPerPage,
-          data.length) }} of {{ data.length }}
+          combinedRecords.length) }} of {{ combinedRecords.length }}
         </div>
         <div class="flex gap-2">
           <button class="px-3 py-1.5 rounded-lg border border-gray-200 text-sm font-medium
