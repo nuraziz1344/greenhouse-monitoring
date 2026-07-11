@@ -56,29 +56,45 @@ const RANGE_OPTIONS = [
 const range = ref(config.public.telemetryDefaultRange)
 
 // Two physical soil-moisture sensor units (runtimeConfig.public.soilSensors).
-// One useFetch per sensor — the array is a fixed build-time config, not
-// reactive state, so the number/order of composable calls never changes.
+// We use useAsyncData + $fetch with server: false so SSR never participates —
+// Nuxt's useFetch can hydrate from an empty SSR response and then refuse to
+// refetch on mount.  Data is fetched manually in onMounted and on every poll.
 const soilSensors = config.public.soilSensors as Array<{ sensorId: number; name: string }>
-const sensorFeeds = soilSensors.map((s) => {
-  const { data, refresh, pending, error } = useFetch<TelemetryRecord[]>(
-    () => `/api/telemetry?range=${range.value}&sensorId=${s.sensorId}`,
-  )
-  return { sensorId: s.sensorId, name: s.name, data, refresh, pending, error }
-})
 
-function refreshAll() {
-  return Promise.all(sensorFeeds.map((s) => s.refresh()))
+const sensorData = ref<Record<number, TelemetryRecord[]>>({})
+const sensorPending = ref(false)
+const sensorError = ref<Error | null>(null)
+
+async function fetchSensor(sensorId: number): Promise<TelemetryRecord[]> {
+  return $fetch<TelemetryRecord[]>(`/api/telemetry?range=${range.value}&sensorId=${sensorId}`)
 }
 
-const anyPending = computed(() => sensorFeeds.some((s) => s.pending.value))
-const firstError = computed(() => sensorFeeds.find((s) => s.error.value)?.error.value ?? null)
-const hasAnyData = computed(() => sensorFeeds.some((s) => (s.data.value?.length ?? 0) > 0))
+async function refreshAll() {
+  sensorPending.value = true
+  sensorError.value = null
+  try {
+    const results = await Promise.all(soilSensors.map((s) => fetchSensor(s.sensorId)))
+    const map: Record<number, TelemetryRecord[]> = {}
+    for (let i = 0; i < soilSensors.length; i++) {
+      map[soilSensors[i].sensorId] = results[i]
+    }
+    sensorData.value = map
+  } catch (err) {
+    sensorError.value = err as Error
+  } finally {
+    sensorPending.value = false
+  }
+}
+
+const hasAnyData = computed(() =>
+  Object.values(sensorData.value).some((arr) => arr.length > 0),
+)
 
 // All sensors' readings merged into one list, newest first — feeds the
 // combined chart/table so the two sensors can be compared side by side.
 const combinedRecords = computed(() => {
-  const merged = sensorFeeds.flatMap((s) =>
-    (s.data.value ?? []).map((r) => ({ ...r, sensorName: s.name })),
+  const merged = soilSensors.flatMap((s) =>
+    (sensorData.value[s.sensorId] ?? []).map((r) => ({ ...r, sensorName: s.name })),
   )
   return merged.sort((a, b) => {
     const ea = new Date(a.recordedAt ?? a.createdAt).getTime()
@@ -91,20 +107,26 @@ const combinedRecords = computed(() => {
 const { data: relays, refresh: refreshRelays } = useFetch<Relay[]>('/api/relay')
 const { data: schedules, refresh: refreshSchedules } = useFetch<Schedule[]>('/api/schedule')
 
-// Auto-poll cloud data (regardless of BLE state)
+// Auto-poll cloud data
 let interval: ReturnType<typeof setInterval> | null = null
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') refreshAll()
+}
 onMounted(() => {
+  refreshAll()
   interval = setInterval(() => refreshAll(), config.public.telemetryPollInterval)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 onUnmounted(() => {
   if (interval) clearInterval(interval)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 // Latest cloud reading per sensor
 const latestBySensor = computed(() => {
   const map: Record<number, TelemetryRecord | null> = {}
-  for (const s of sensorFeeds) {
-    map[s.sensorId] = s.data.value?.[0] ?? null
+  for (const s of soilSensors) {
+    map[s.sensorId] = sensorData.value[s.sensorId]?.[0] ?? null
   }
   return map
 })
@@ -324,8 +346,8 @@ watch(combinedRecords, () => { currentPage.value = 1 })
           </button>
         </div>
         <button class="text-sm px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50
-           text-gray-600 transition-colors disabled:opacity-50" :disabled="anyPending" @click="refreshAll()">
-          {{ anyPending ? 'Refreshing...' : 'Refresh' }}
+           text-gray-600 transition-colors disabled:opacity-50" :disabled="sensorPending" @click="refreshAll()">
+          {{ sensorPending ? 'Refreshing...' : 'Refresh' }}
         </button>
       </div>
     </div>
@@ -357,13 +379,13 @@ watch(combinedRecords, () => { currentPage.value = 1 })
     </div>
 
     <!-- Error State -->
-    <div v-if="firstError" class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
-      ⚠ Failed to load telemetry data: {{ firstError.message }}
+    <div v-if="sensorError" class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
+      ⚠ Failed to load telemetry data: {{ sensorError.message }}
       <button class="underline ml-2 hover:no-underline" @click="refreshAll()">Retry</button>
     </div>
 
     <!-- Loading skeleton -->
-    <div v-if="anyPending && !hasAnyData">
+    <div v-if="sensorPending && !hasAnyData">
       <div class="rounded-xl border border-gray-200 p-5 animate-pulse">
         <div class="h-4 bg-gray-200 rounded w-24 mb-4" />
         <div class="h-8 bg-gray-200 rounded w-20" />
@@ -371,7 +393,7 @@ watch(combinedRecords, () => { currentPage.value = 1 })
     </div>
 
     <!-- Empty state -->
-    <div v-if="!anyPending && !hasAnyData && !bleConnected"
+    <div v-if="!sensorPending && !hasAnyData && !bleConnected"
       class="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
       <div class="text-amber-600 font-medium text-lg mb-1">No Data Yet</div>
       <p class="text-amber-700/70 text-sm">
@@ -408,7 +430,7 @@ watch(combinedRecords, () => { currentPage.value = 1 })
 
     <!-- Chart (one series per sensor) -->
     <div v-if="hasAnyData">
-      <TelemetryChart :sensors="sensorFeeds.map((s) => ({ name: s.name, records: s.data.value ?? [] }))" />
+      <TelemetryChart :sensors="soilSensors.map((s) => ({ name: s.name, records: sensorData[s.sensorId] ?? [] }))" />
     </div>
 
     <!-- Data Table (combined, tagged with sensor) -->

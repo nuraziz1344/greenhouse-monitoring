@@ -8,6 +8,7 @@
  *   npx tsx scripts/simulate-esp32.ts --batch              — 24 historical readings (batch sync)
  *   npx tsx scripts/simulate-esp32.ts --url=<url>          — custom API endpoint
  *   npx tsx scripts/simulate-esp32.ts --scenario=<name>    — test scenarios
+ *   npx tsx scripts/simulate-esp32.ts --sensorId=<1|2>     — pin legacy modes to one sensor unit
  *
  * Scenarios:
  *   wifi-realtime           — ESP32 POSTs realtime every 15min (simulates WiFi direct)
@@ -17,6 +18,11 @@
  *   low-moisture-alert      — Gradual drying trend (< 40%)
  *   daily-pattern           — 24-hour realistic watering pattern
  *
+ * All scenarios interleave both configured sensor units (sensorId 1 and 2, see
+ * nuxt.config.ts runtimeConfig.public.soilSensors) so the dashboard's per-sensor
+ * cards/chart series both receive data — matching the two-sensor API model
+ * (API_INTEGRATION.md §2.1) even though real firmware doesn't send sensorId yet.
+ *
  * Examples:
  *   npx tsx scripts/simulate-esp32.ts --url=https://greenhouse-monitoring-opal.vercel.app
  *   npx tsx scripts/simulate-esp32.ts --scenario=wifi-recovery
@@ -25,17 +31,17 @@
 
 interface TelemetryPayload {
   soilMoisture: number
+  sensorId?: number
   recordedAt?: string
-  timestamp?: number
-  deviceId?: string
 }
 
 const BASE_MOISTURE = 55 // Ideal for melon: 50–70%
-const DEVICE_ID = 'gh-sensor-01'
+const SENSOR_IDS = [1, 2] // Mirrors nuxt.config.ts runtimeConfig.public.soilSensors
 
-function generateReading(baseMoisture: number = BASE_MOISTURE, variance: number = 20): TelemetryPayload {
+function generateReading(baseMoisture: number = BASE_MOISTURE, variance: number = 20, sensorId?: number): TelemetryPayload {
   return {
     soilMoisture: Math.round((baseMoisture + (Math.random() - 0.5) * variance) * 10) / 10,
+    ...(sensorId !== undefined ? { sensorId } : {}),
   }
 }
 
@@ -52,7 +58,8 @@ async function sendTelemetry(apiUrl: string, payload: TelemetryPayload): Promise
   }
 
   const result = await response.json()
-  console.log(`✓ POST /api/telemetry: M=${payload.soilMoisture.toFixed(1)}%`)
+  const sensorTag = payload.sensorId !== undefined ? ` sensor=${payload.sensorId}` : ''
+  console.log(`✓ POST /api/telemetry:${sensorTag} M=${payload.soilMoisture.toFixed(1)}%`)
 }
 
 async function sendBatch(apiUrl: string, readings: TelemetryPayload[]): Promise<void> {
@@ -79,7 +86,8 @@ async function scenarioWiFiRealtime(apiUrl: string, count: number = 10): Promise
 
   for (let i = 0; i < count; i++) {
     try {
-      const reading = generateReading()
+      const sensorId = SENSOR_IDS[i % SENSOR_IDS.length]
+      const reading = generateReading(BASE_MOISTURE, 20, sensorId)
       await sendTelemetry(apiUrl, reading)
       if (i < count - 1) {
         console.log(`   Waiting 2s before next reading (simulating 15min interval)…\n`)
@@ -101,13 +109,14 @@ async function scenarioWiFiRecovery(apiUrl: string): Promise<void> {
     const moisture = BASE_MOISTURE + (Math.random() - 0.5) * 30
     return {
       soilMoisture: Math.round(moisture * 10) / 10,
+      sensorId: SENSOR_IDS[i % SENSOR_IDS.length],
       recordedAt: new Date(now - (15 - i) * 15 * 60_000).toISOString(), // 15-min intervals
     }
   })
 
   console.log(`Generated ${readings.length} readings from 4 hours ago…\n`)
   readings.forEach((r, i) => {
-    console.log(`  ${i + 1}. ${r.recordedAt}: ${r.soilMoisture}%`)
+    console.log(`  ${i + 1}. [sensor ${r.sensorId}] ${r.recordedAt}: ${r.soilMoisture}%`)
   })
   console.log()
 
@@ -125,11 +134,12 @@ async function scenarioBLERealtime(apiUrl: string, count: number = 10): Promise<
   for (let i = 0; i < count; i++) {
     try {
       const now = Date.now()
+      const sensorId = SENSOR_IDS[i % SENSOR_IDS.length]
       const reading = {
-        ...generateReading(),
+        ...generateReading(BASE_MOISTURE, 20, sensorId),
         recordedAt: new Date(now - (count - i - 1) * 15 * 60_000).toISOString(),
       }
-      console.log(`📲 BLE NOTIFY: ${reading.recordedAt} → ${reading.soilMoisture}%`)
+      console.log(`📲 BLE NOTIFY: [sensor ${reading.sensorId}] ${reading.recordedAt} → ${reading.soilMoisture}%`)
 
       if (i < count - 1) {
         await new Promise(resolve => setTimeout(resolve, 1000))
@@ -148,6 +158,7 @@ async function scenarioBLEHistoryDump(apiUrl: string): Promise<void> {
   const now = Date.now()
   const readings = Array.from({ length: 24 }, (_, i) => ({
     soilMoisture: Math.round((BASE_MOISTURE + (Math.random() - 0.5) * 30) * 10) / 10,
+    sensorId: SENSOR_IDS[i % SENSOR_IDS.length],
     recordedAt: new Date(now - (23 - i) * 60 * 60_000).toISOString(), // 1-hour intervals for demo
   }))
 
@@ -163,19 +174,23 @@ async function scenarioLowMoistureAlert(apiUrl: string): Promise<void> {
   console.log('⚠️  Low Moisture Alert Scenario: Gradual drying (< 40%)\n')
 
   const readings: TelemetryPayload[] = []
-  let moisture = 65
+  const moisture = { 1: 65, 2: 65 } as Record<number, number>
   const now = Date.now()
 
   for (let i = 0; i < 12; i++) {
-    moisture -= 2 + Math.random() * 2 // Gradual decrease
-    const reading = {
-      soilMoisture: Math.round(moisture * 10) / 10,
-      recordedAt: new Date(now - (11 - i) * 15 * 60_000).toISOString(),
-    }
-    readings.push(reading)
+    const recordedAt = new Date(now - (11 - i) * 15 * 60_000).toISOString()
+    for (const sensorId of SENSOR_IDS) {
+      moisture[sensorId]! -= 2 + Math.random() * 2 // Gradual decrease
+      const reading = {
+        soilMoisture: Math.round(moisture[sensorId]! * 10) / 10,
+        sensorId,
+        recordedAt,
+      }
+      readings.push(reading)
 
-    const status = reading.soilMoisture < 40 ? '🚨 ALERT' : '📊'
-    console.log(`  ${status} ${reading.recordedAt}: ${reading.soilMoisture}%`)
+      const status = reading.soilMoisture < 40 ? '🚨 ALERT' : '📊'
+      console.log(`  ${status} [sensor ${sensorId}] ${reading.recordedAt}: ${reading.soilMoisture}%`)
+    }
   }
 
   console.log()
@@ -193,23 +208,28 @@ async function scenarioDailyPattern(apiUrl: string): Promise<void> {
   const readings: TelemetryPayload[] = []
   const now = Date.now()
 
-  // 6 AM: Before watering
-  readings.push({ soilMoisture: 35, recordedAt: new Date(now - 18 * 3600_000).toISOString() })
+  for (const sensorId of SENSOR_IDS) {
+    // 6 AM: Before watering
+    readings.push({ soilMoisture: 35, sensorId, recordedAt: new Date(now - 18 * 3600_000).toISOString() })
 
-  // 6:15 AM: After watering
-  readings.push({ soilMoisture: 72, recordedAt: new Date(now - 17.75 * 3600_000).toISOString() })
+    // 6:15 AM: After watering
+    readings.push({ soilMoisture: 72, sensorId, recordedAt: new Date(now - 17.75 * 3600_000).toISOString() })
 
-  // Gradual drying throughout day (every 1 hour)
-  for (let i = 1; i <= 12; i++) {
-    readings.push({
-      soilMoisture: Math.round((72 - i * 3 + Math.random() * 5) * 10) / 10,
-      recordedAt: new Date(now - (17.75 - i) * 3600_000).toISOString(),
-    })
+    // Gradual drying throughout day (every 1 hour)
+    for (let i = 1; i <= 12; i++) {
+      readings.push({
+        soilMoisture: Math.round((72 - i * 3 + Math.random() * 5) * 10) / 10,
+        sensorId,
+        recordedAt: new Date(now - (17.75 - i) * 3600_000).toISOString(),
+      })
+    }
   }
 
-  readings.forEach(r => {
-    console.log(`  ${r.recordedAt}: ${r.soilMoisture}%`)
-  })
+  readings
+    .sort((a, b) => new Date(a.recordedAt!).getTime() - new Date(b.recordedAt!).getTime())
+    .forEach(r => {
+      console.log(`  [sensor ${r.sensorId}] ${r.recordedAt}: ${r.soilMoisture}%`)
+    })
 
   console.log()
   try {
@@ -233,6 +253,8 @@ OPTIONS:
   --continuous          Continuous stream mode (Ctrl+C to stop)
   --interval=<seconds>  Delay between readings (default: 5)
   --count=<number>      Number of readings to send (default: 10)
+  --sensorId=<1|2>      Pin legacy modes (--batch/--continuous/one-time) to one sensor unit
+                        (default: alternate between both configured sensors)
   --help                Show this help message
 
 SCENARIOS:
@@ -295,6 +317,8 @@ async function main(): Promise<void> {
   const scenario = process.argv.find(arg => arg.startsWith('--scenario='))?.split('=')[1]
   const interval = parseInt(process.argv.find(arg => arg.startsWith('--interval='))?.split('=')[1] || '5', 10)
   const count = parseInt(process.argv.find(arg => arg.startsWith('--count='))?.split('=')[1] || '10', 10)
+  const sensorIdArg = process.argv.find(arg => arg.startsWith('--sensorId='))?.split('=')[1]
+  const pinnedSensorId = sensorIdArg ? parseInt(sensorIdArg, 10) : undefined
 
   console.log('🌱 Greenhouse Sensor Simulator')
   console.log(`📍 API URL: ${apiUrl}`)
@@ -332,6 +356,7 @@ async function main(): Promise<void> {
     const now = Date.now()
     const readings = Array.from({ length: 24 }, (_, i) => ({
       soilMoisture: Math.round((BASE_MOISTURE + (Math.random() - 0.5) * 30) * 10) / 10,
+      sensorId: pinnedSensorId ?? SENSOR_IDS[i % SENSOR_IDS.length],
       recordedAt: new Date(now - (23 - i) * 3_600_000).toISOString(),
     }))
     await sendBatch(apiUrl, readings)
@@ -342,9 +367,10 @@ async function main(): Promise<void> {
     console.log(`♾️  Continuous mode — every ${interval}s (Ctrl+C to stop)\n`)
     let reading = 0
     const timer = setInterval(async () => {
+      const sensorId = pinnedSensorId ?? SENSOR_IDS[reading % SENSOR_IDS.length]
       reading++
       try {
-        await sendTelemetry(apiUrl, generateReading())
+        await sendTelemetry(apiUrl, generateReading(BASE_MOISTURE, 20, sensorId))
       } catch (err) {
         console.error('✗ Failed:', err)
       }
@@ -359,7 +385,8 @@ async function main(): Promise<void> {
     console.log(`📊 One-time mode — ${count} readings every ${interval}s\n`)
     for (let i = 0; i < count; i++) {
       try {
-        await sendTelemetry(apiUrl, generateReading())
+        const sensorId = pinnedSensorId ?? SENSOR_IDS[i % SENSOR_IDS.length]
+        await sendTelemetry(apiUrl, generateReading(BASE_MOISTURE, 20, sensorId))
       } catch (err) {
         console.error('✗ Failed:', err)
       }
